@@ -14,7 +14,7 @@ python3 -m venv .venv
 ```shell
 source .venv/bin/activate
 ```
-**Or if on windows"**
+**Or if on windows**
 ```shell
 venv\Scripts\activate.bat
 ```
