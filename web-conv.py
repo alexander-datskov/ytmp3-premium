@@ -1,473 +1,331 @@
 #!/usr/bin/env python3
 """
-YTMP3-DL Web Terminal Server
-Runs on port 1234 with embedded HTML, live terminal, and SFTP download
+YTMP3-DL Web Terminal Server – OLED Black Edition
+Auto-deletes files after download. Secure streaming + download endpoints.
+Suppresses backend warnings.
 """
 
-from flask import Flask, render_template_string, request, jsonify, send_file
+import warnings
+warnings.filterwarnings("ignore", message=".*RequestsDependencyWarning.*")
+warnings.filterwarnings("ignore", message=".*urllib3.*")
+warnings.filterwarnings("ignore", message=".*chardet.*")
+
+from flask import Flask, render_template_string, request, jsonify, send_file, abort, make_response
 from flask_socketio import SocketIO, emit
 import subprocess
 import threading
 import os
 import time
-import paramiko
-from io import BytesIO
 import re
+import traceback
 
 app = Flask(__name__)
 app.config['SECRET_KEY'] = 'ytmp3-dl-secret-key-2024'
 socketio = SocketIO(app, cors_allowed_origins="*")
 
-# SFTP Configuration
-SFTP_HOST = 'rasp-alex2.local'
-SFTP_PORT = 22
-SFTP_USER = 'rasp-alex2'
-SFTP_PASS = '120313'
-SFTP_DIR = '/home/rasp-alex2/Downloads'
+# Output directory (where mp3.py saves files)
+OUTPUT_DIR = '/home/rasp-alex2/ytmp3-mp4/music-output'
 
 # Active processes
 active_processes = {}
 
-# HTML Template (embedded)
+# HTML Template – OLED Black, refined UI, custom download button
 HTML_TEMPLATE = r"""
 <!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>YTMP3-DL Web Terminal</title>
+    <title>YTMP3-DL · OLED Terminal</title>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.5.4/socket.io.js"></script>
     <style>
-        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap');
-        
+        /* OLED Black Theme – Refined, better readability */
+        :root {
+            --bg: #000000;
+            --card-bg: rgba(20, 20, 20, 0.7);
+            --card-border: rgba(80, 80, 80, 0.3);
+            --card-shadow: rgba(0, 0, 0, 0.95);
+            --input-bg: rgba(30, 30, 30, 0.8);
+            --input-border: rgba(100, 100, 100, 0.3);
+            --text-primary: #ffffff;
+            --text-secondary: #cccccc;
+            --accent: #00ff88;
+            --accent-glow: 0 0 15px rgba(0, 255, 136, 0.3);
+            --btn-bg: #0a0a0a;
+            --btn-hover: #1a1a1a;
+            --terminal-bg: #0a0a0a;
+            --terminal-text: #aaffaa;
+            --scrollbar-track: #0a0a0a;
+            --scrollbar-thumb: #2a2a2a;
+            --blur: 30px;
+        }
+
         * {
             margin: 0;
             padding: 0;
             box-sizing: border-box;
         }
 
+        html {
+            scroll-behavior: smooth;
+        }
+
         body {
-            font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-            background: linear-gradient(135deg, #1e3c72 0%, #2a5298 25%, #7e8ba3 50%, #b8c6db 75%, #f5f7fa 100%);
-            background-attachment: fixed;
+            background: var(--bg);
+            color: var(--text-primary);
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            font-weight: 400;
             min-height: 100vh;
-            padding: 40px 20px;
+            display: block;
+            padding: 20px;
             position: relative;
-            overflow-x: hidden;
         }
 
-        /* Winter Snowflakes */
-        body::before {
-            content: '';
+        /* subtle animated grain */
+        body::after {
+            content: "";
             position: fixed;
-            top: 0;
-            left: 0;
-            width: 100%;
-            height: 100%;
-            background-image: 
-                radial-gradient(2px 2px at 20% 30%, white, transparent),
-                radial-gradient(2px 2px at 60% 70%, white, transparent),
-                radial-gradient(1px 1px at 50% 50%, white, transparent),
-                radial-gradient(1px 1px at 80% 10%, white, transparent),
-                radial-gradient(2px 2px at 90% 60%, white, transparent),
-                radial-gradient(1px 1px at 33% 80%, white, transparent);
-            background-size: 200% 200%;
-            animation: snowfall 20s linear infinite;
-            opacity: 0.6;
+            top: 0; left: 0; width: 100%; height: 100%;
+            background: url('data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIzMDAiIGhlaWdodD0iMzAwIj48ZmlsdGVyIGlkPSJmIj48ZmVUdXJidWxlbmNlIHR5cGU9ImZyYWN0YWxOb2lzZSIgYmFzZUZyZXF1ZW5jeT0iLjc0IiBudW1PY3RhdmVzPSIzIiAvPjwvZmlsdGVyPjxyZWN0IHdpZHRoPSIxMDAlIiBoZWlnaHQ9IjEwMCUiIGZpbHRlcj0idXJsKCNmKSIgb3BhY2l0eT0iMC4wNCIgLz48L3N2Zz4=');
             pointer-events: none;
-            z-index: 1;
-        }
-
-        @keyframes snowfall {
-            0% { transform: translateY(0); }
-            100% { transform: translateY(100%); }
-        }
-
-        /* Frosted Glass Effect */
-        .glass {
-            background: rgba(255, 255, 255, 0.85);
-            backdrop-filter: blur(20px) saturate(180%);
-            -webkit-backdrop-filter: blur(20px) saturate(180%);
-            border: 1px solid rgba(255, 255, 255, 0.3);
-            box-shadow: 
-                0 8px 32px 0 rgba(31, 38, 135, 0.15),
-                inset 0 1px 0 0 rgba(255, 255, 255, 0.5);
+            opacity: 0.3;
+            z-index: 0;
         }
 
         .container {
-            max-width: 1400px;
+            max-width: 1200px;
+            width: 100%;
             margin: 0 auto;
-            padding: 20px;
             position: relative;
             z-index: 10;
         }
 
-        /* Header Section */
+        /* Glass card with glow */
+        .glass {
+            background: var(--card-bg);
+            backdrop-filter: blur(var(--blur));
+            -webkit-backdrop-filter: blur(var(--blur));
+            border: 1px solid var(--card-border);
+            border-radius: 28px;
+            box-shadow: 0 20px 40px var(--card-shadow), 0 0 0 1px rgba(255,255,255,0.02) inset;
+            transition: all 0.3s ease;
+        }
+
+        .glass:hover {
+            border-color: rgba(120, 120, 120, 0.5);
+            box-shadow: 0 25px 50px rgba(0, 0, 0, 0.8), var(--accent-glow);
+        }
+
+        /* Header / Logo */
         .header {
             text-align: center;
-            padding: 60px 0 40px;
-            position: relative;
+            margin-bottom: 40px;
+            animation: fadeInDown 0.6s ease-out;
         }
 
-        .logo-container {
-            display: inline-flex;
-            align-items: center;
-            gap: 20px;
-            margin-bottom: 20px;
-        }
-
-        .logo-icon {
-            width: 80px;
-            height: 80px;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            border-radius: 20px;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            font-size: 2.5rem;
-            box-shadow: 0 10px 30px rgba(102, 126, 234, 0.3);
-            animation: float 3s ease-in-out infinite;
-        }
-
-        @keyframes float {
-            0%, 100% { transform: translateY(0px); }
-            50% { transform: translateY(-10px); }
-        }
-
-        .title {
-            font-size: 4rem;
-            font-weight: 800;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 50%, #667eea 100%);
-            background-size: 200% auto;
+        .logo {
+            font-size: 3.5rem;
+            font-weight: 300;
+            letter-spacing: 4px;
+            background: linear-gradient(135deg, #606060 0%, #808080 25%, #a0a0a0 50%, #808080 75%, #606060 100%);
             -webkit-background-clip: text;
             -webkit-text-fill-color: transparent;
-            animation: gradientShift 3s ease infinite;
-            letter-spacing: -2px;
-            margin-bottom: 10px;
+            background-clip: text;
+            margin-bottom: 8px;
+            filter: drop-shadow(0 0 10px rgba(255,255,255,0.1));
         }
 
-        @keyframes gradientShift {
-            0%, 100% { background-position: 0% 50%; }
-            50% { background-position: 100% 50%; }
+        .tagline {
+            font-size: 0.85rem;
+            color: var(--text-secondary);
+            letter-spacing: 2px;
+            text-transform: uppercase;
         }
 
-        .subtitle {
-            font-size: 1.1rem;
-            color: #4a5568;
-            font-weight: 500;
-            letter-spacing: 1px;
-        }
-
-        /* Card Styles */
-        .card {
-            border-radius: 24px;
-            padding: 40px;
+        /* Input card */
+        .input-card {
+            padding: 30px;
             margin-bottom: 30px;
-            transition: all 0.4s cubic-bezier(0.4, 0, 0.2, 1);
-        }
-
-        .card:hover {
-            transform: translateY(-4px);
-            box-shadow: 
-                0 20px 60px 0 rgba(31, 38, 135, 0.2),
-                inset 0 1px 0 0 rgba(255, 255, 255, 0.6);
-        }
-
-        /* Input Section */
-        .input-section {
-            position: relative;
+            animation: fadeInUp 0.6s ease-out 0.1s both;
         }
 
         .input-label {
             display: block;
-            font-size: 0.875rem;
+            font-size: 0.8rem;
             font-weight: 600;
-            color: #4a5568;
+            color: var(--text-secondary);
             margin-bottom: 12px;
             text-transform: uppercase;
             letter-spacing: 1px;
         }
 
         .input-wrapper {
-            position: relative;
-            margin-bottom: 24px;
-        }
-
-        .input-icon {
-            position: absolute;
-            left: 20px;
-            top: 50%;
-            transform: translateY(-50%);
-            font-size: 1.3rem;
-            color: #a0aec0;
-            z-index: 1;
-        }
-
-        .url-input {
-            width: 100%;
-            background: rgba(255, 255, 255, 0.9);
-            border: 2px solid rgba(102, 126, 234, 0.2);
-            border-radius: 16px;
-            padding: 20px 20px 20px 60px;
-            color: #2d3748;
-            font-family: 'JetBrains Mono', monospace;
-            font-size: 1rem;
-            font-weight: 500;
-            transition: all 0.3s ease;
-            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.05);
-        }
-
-        .url-input:focus {
-            outline: none;
-            border-color: #667eea;
-            background: white;
-            box-shadow: 
-                0 4px 20px rgba(102, 126, 234, 0.15),
-                0 0 0 4px rgba(102, 126, 234, 0.1);
-            transform: translateY(-2px);
-        }
-
-        .url-input::placeholder {
-            color: #a0aec0;
-            font-weight: 400;
-        }
-
-        /* Button Styles */
-        .btn-container {
             display: flex;
-            gap: 16px;
+            gap: 12px;
+            align-items: center;
+        }
+
+        #urlInput {
+            flex: 1;
+            background: var(--input-bg);
+            border: 1px solid var(--input-border);
+            border-radius: 18px;
+            padding: 18px 24px;
+            color: var(--text-primary);
+            font-size: 1rem;
+            font-family: 'JetBrains Mono', monospace;
+            outline: none;
+            transition: all 0.2s;
+        }
+
+        #urlInput:focus {
+            border-color: var(--accent);
+            background: rgba(40, 40, 40, 0.9);
+            box-shadow: 0 0 0 3px var(--accent-dim), var(--accent-glow);
+        }
+
+        #urlInput::placeholder {
+            color: rgba(255, 255, 255, 0.2);
         }
 
         .btn {
-            flex: 1;
+            background: var(--btn-bg);
+            border: 1px solid var(--card-border);
+            border-radius: 18px;
             padding: 18px 32px;
-            font-family: 'Inter', sans-serif;
-            font-size: 1rem;
+            color: var(--text-primary);
             font-weight: 600;
-            text-transform: none;
-            letter-spacing: 0.5px;
-            border: none;
-            border-radius: 14px;
+            font-size: 0.95rem;
             cursor: pointer;
-            position: relative;
-            overflow: hidden;
-            transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
-            display: flex;
+            transition: all 0.2s;
+            display: inline-flex;
             align-items: center;
-            justify-content: center;
-            gap: 10px;
-        }
-
-        .btn::before {
-            content: '';
-            position: absolute;
-            top: 0;
-            left: -100%;
-            width: 100%;
-            height: 100%;
-            background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.3), transparent);
-            transition: left 0.5s;
-        }
-
-        .btn:hover::before {
-            left: 100%;
+            gap: 8px;
+            white-space: nowrap;
+            backdrop-filter: blur(var(--blur));
         }
 
         .btn-primary {
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            color: white;
-            box-shadow: 0 10px 25px rgba(102, 126, 234, 0.3);
+            background: #0a0a0a;
+            border-color: rgba(0, 255, 136, 0.3);
         }
 
         .btn-primary:hover:not(:disabled) {
-            box-shadow: 0 15px 35px rgba(102, 126, 234, 0.4);
+            background: #1a1a1a;
+            border-color: var(--accent);
+            box-shadow: var(--accent-glow);
             transform: translateY(-2px);
-        }
-
-        .btn-primary:active:not(:disabled) {
-            transform: translateY(0);
         }
 
         .btn-secondary {
-            background: white;
-            color: #667eea;
-            border: 2px solid #667eea;
-            box-shadow: 0 4px 15px rgba(102, 126, 234, 0.15);
+            background: #0a0a0a;
         }
 
         .btn-secondary:hover:not(:disabled) {
-            background: #667eea;
-            color: white;
-            box-shadow: 0 8px 25px rgba(102, 126, 234, 0.3);
-            transform: translateY(-2px);
+            background: #1a1a1a;
+            border-color: rgba(255,255,255,0.2);
         }
 
         .btn:disabled {
-            opacity: 0.6;
+            opacity: 0.4;
             cursor: not-allowed;
-            transform: none;
         }
 
         .btn-icon {
             font-size: 1.2rem;
         }
 
-        /* Status Messages */
-        #status {
-            margin-top: 20px;
-        }
-
-        .status {
-            padding: 16px 24px;
-            border-radius: 12px;
-            text-align: left;
-            font-weight: 500;
-            font-size: 0.95rem;
-            display: flex;
-            align-items: center;
-            gap: 12px;
-            animation: slideDown 0.3s ease;
-        }
-
-        @keyframes slideDown {
-            from {
-                opacity: 0;
-                transform: translateY(-10px);
-            }
-            to {
-                opacity: 1;
-                transform: translateY(0);
-            }
-        }
-
-        .status::before {
-            content: '';
-            width: 8px;
-            height: 8px;
-            border-radius: 50%;
-            animation: pulse 2s infinite;
-        }
-
-        @keyframes pulse {
-            0%, 100% { opacity: 1; transform: scale(1); }
-            50% { opacity: 0.5; transform: scale(1.2); }
-        }
-
-        .status.info {
-            background: linear-gradient(135deg, #e3f2fd 0%, #bbdefb 100%);
-            color: #1565c0;
-            border-left: 4px solid #1976d2;
-        }
-
-        .status.info::before {
-            background: #1976d2;
-        }
-
-        .status.success {
-            background: linear-gradient(135deg, #e8f5e9 0%, #c8e6c9 100%);
-            color: #2e7d32;
-            border-left: 4px solid #388e3c;
-        }
-
-        .status.success::before {
-            background: #388e3c;
-        }
-
-        .status.error {
-            background: linear-gradient(135deg, #ffebee 0%, #ffcdd2 100%);
-            color: #c62828;
-            border-left: 4px solid #d32f2f;
-        }
-
-        .status.error::before {
-            background: #d32f2f;
-        }
-
-        /* Terminal Section - KEPT AS IS */
+        /* Terminal card */
         .terminal-card {
-            border-radius: 24px;
-            padding: 40px;
+            padding: 30px;
             margin-bottom: 30px;
-        }
-
-        .terminal-header-text {
-            font-size: 1.5rem;
-            font-weight: 700;
-            color: #2d3748;
-            margin-bottom: 20px;
-            display: flex;
-            align-items: center;
-            gap: 12px;
-        }
-
-        .terminal-header-text::before {
-            content: '⚡';
-            font-size: 1.8rem;
-        }
-
-        .terminal {
-            background: #1e1e1e;
-            border-radius: 16px;
-            padding: 20px;
-            font-family: 'Courier New', monospace;
-            color: #00ff00;
-            font-size: 1.1rem;
-            min-height: 546px;
-            max-height: 728px;
-            overflow-y: auto;
-            margin-bottom: 20px;
+            animation: fadeInUp 0.6s ease-out 0.2s both;
             display: none;
-            width: 130%;
-            margin-left: -15%;
-            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
         }
 
-        .terminal.active {
+        .terminal-card.active {
             display: block;
         }
 
-        .terminal-line {
-            margin-bottom: 5px;
-            white-space: pre-wrap;
-            word-break: break-all;
+        .terminal-header {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            margin-bottom: 20px;
+            color: var(--text-secondary);
+            font-size: 0.9rem;
+            text-transform: uppercase;
+            letter-spacing: 1px;
         }
 
+        .terminal-header svg {
+            width: 18px;
+            height: 18px;
+            stroke: var(--accent);
+            fill: none;
+        }
+
+        .terminal {
+            background: var(--terminal-bg);
+            border-radius: 20px;
+            padding: 20px;
+            font-family: 'JetBrains Mono', 'Courier New', monospace;
+            color: var(--terminal-text);
+            font-size: 0.8rem;
+            font-weight: 500;
+            min-height: 300px;
+            max-height: 500px;
+            overflow-y: auto;
+            border: 1px solid #1a1a1a;
+            box-shadow: inset 0 0 30px rgba(0,0,0,0.8), 0 0 20px rgba(0,255,136,0.1);
+            line-height: 1.5;
+        }
+
+        .terminal-line {
+            white-space: pre-wrap;
+            word-break: break-all;
+            margin-bottom: 4px;
+        }
+
+        /* Numpad */
         .terminal-input {
+            margin-top: 20px;
             display: none;
-            gap: 10px;
-            margin-top: 15px;
-            flex-wrap: wrap;
         }
 
         .terminal-input.active {
-            display: flex;
+            display: block;
         }
 
         .numpad {
-            display: grid;
-            grid-template-columns: repeat(4, 1fr);
+            display: flex;
             gap: 12px;
-            max-width: 600px;
+            flex-wrap: wrap;
+            justify-content: center;
         }
 
         .numpad-btn {
-            padding: 20px;
-            background: linear-gradient(135deg, #00ff00 0%, #00dd00 100%);
-            color: #1e1e1e;
-            border: none;
-            border-radius: 12px;
-            font-weight: bold;
-            font-size: 1.3rem;
+            width: 70px;
+            height: 70px;
+            background: #0a0a0a;
+            border: 1px solid #2a2a2a;
+            border-radius: 20px;
+            color: var(--text-primary);
+            font-size: 1.8rem;
+            font-weight: 600;
             cursor: pointer;
-            transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
-            font-family: 'JetBrains Mono', monospace;
-            box-shadow: 0 4px 15px rgba(0, 255, 0, 0.2);
+            transition: all 0.2s;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            box-shadow: 0 5px 15px rgba(0,0,0,0.5);
         }
 
         .numpad-btn:hover:not(:disabled) {
+            border-color: var(--accent);
+            background: #1a1a1a;
             transform: translateY(-3px);
-            box-shadow: 0 8px 25px rgba(0, 255, 0, 0.4);
-            background: linear-gradient(135deg, #00ff41 0%, #00ee00 100%);
+            box-shadow: 0 8px 20px rgba(0,255,136,0.2);
         }
 
         .numpad-btn:active:not(:disabled) {
@@ -475,511 +333,333 @@ HTML_TEMPLATE = r"""
         }
 
         .numpad-btn:disabled {
-            opacity: 0.5;
-            cursor: not-allowed;
-            transform: none;
+            opacity: 0.4;
         }
 
-        /* ANSI Color Classes */
-        .ansi-red { color: #ff0051; }
-        .ansi-green { color: #00ff41; }
-        .ansi-yellow { color: #ffff00; }
-        .ansi-blue { color: #0099ff; }
-        .ansi-magenta { color: #ff00ff; }
-        .ansi-cyan { color: #00ffff; }
-        .ansi-white { color: #ffffff; }
-        .ansi-bold { font-weight: bold; }
-
-        /* File Info Section */
-        .file-info {
-            border-radius: 24px;
-            padding: 40px;
+        /* File info & audio player cards */
+        .file-card, .audio-card {
+            padding: 30px;
             margin-bottom: 30px;
             display: none;
+            animation: fadeInUp 0.4s ease-out;
         }
 
-        .file-info.active {
+        .file-card.active, .audio-card.active {
             display: block;
-            animation: slideDown 0.4s ease;
         }
 
-        .file-info h3 {
-            color: #2d3748;
-            margin-bottom: 24px;
-            font-size: 1.5rem;
-            font-weight: 700;
+        .card-title {
+            font-size: 1.3rem;
+            font-weight: 400;
+            margin-bottom: 20px;
             display: flex;
             align-items: center;
-            gap: 12px;
+            gap: 10px;
+            color: var(--text-secondary);
+        }
+
+        .card-title svg {
+            width: 24px;
+            height: 24px;
+            stroke: var(--accent);
+            fill: none;
         }
 
         .file-details {
-            font-family: 'JetBrains Mono', monospace;
-            background: linear-gradient(135deg, rgba(102, 126, 234, 0.05) 0%, rgba(118, 75, 162, 0.05) 100%);
+            background: rgba(0,0,0,0.4);
+            border-radius: 18px;
             padding: 24px;
-            border-radius: 16px;
-            margin-bottom: 20px;
-            border-left: 4px solid #667eea;
-            box-shadow: 0 4px 15px rgba(0, 0, 0, 0.05);
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 0.95rem;
+            border-left: 3px solid var(--accent);
+            margin-bottom: 24px;
+            box-shadow: inset 0 0 10px rgba(0,0,0,0.5);
         }
 
         .file-details p {
             margin: 12px 0;
-            color: #4a5568;
-            font-size: 0.95rem;
-            display: flex;
-            align-items: center;
-            gap: 12px;
-        }
-
-        .file-details strong {
-            color: #2d3748;
-            font-weight: 600;
-            min-width: 140px;
-        }
-
-        .file-actions-row {
-            display: flex;
-            gap: 12px;
-        }
-
-        .delete-btn {
-            padding: 14px 28px;
-            background: linear-gradient(135deg, #f56565 0%, #c53030 100%);
-            color: white;
-            border: none;
-            border-radius: 12px;
-            cursor: pointer;
-            transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
-            font-weight: 600;
-            font-size: 0.95rem;
-            display: flex;
-            align-items: center;
-            gap: 8px;
-            box-shadow: 0 6px 20px rgba(245, 101, 101, 0.3);
-        }
-
-        .delete-btn:hover {
-            background: linear-gradient(135deg, #fc8181 0%, #e53e3e 100%);
-            box-shadow: 0 10px 30px rgba(245, 101, 101, 0.4);
-            transform: translateY(-2px);
-        }
-
-        /* Audio Player */
-        .audio-player {
-            border-radius: 24px;
-            padding: 40px;
-            margin-bottom: 30px;
-            display: none;
-        }
-
-        .audio-player.active {
-            display: block;
-            animation: slideDown 0.4s ease;
-        }
-
-        .audio-player h3 {
-            margin-bottom: 24px;
-            color: #2d3748;
-            font-size: 1.5rem;
-            font-weight: 700;
-            display: flex;
-            align-items: center;
-            gap: 12px;
-        }
-
-        .audio-player audio {
-            width: 100%;
-            margin-bottom: 20px;
-            border-radius: 12px;
-            outline: none;
-        }
-
-        .download-btn {
-            display: inline-flex;
-            align-items: center;
-            gap: 10px;
-            padding: 14px 28px;
-            background: linear-gradient(135deg, #48bb78 0%, #38a169 100%);
-            color: white;
-            text-decoration: none;
-            border-radius: 12px;
-            font-weight: 600;
-            transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
-            box-shadow: 0 6px 20px rgba(72, 187, 120, 0.3);
-        }
-
-        .download-btn:hover {
-            background: linear-gradient(135deg, #68d391 0%, #48bb78 100%);
-            box-shadow: 0 10px 30px rgba(72, 187, 120, 0.4);
-            transform: translateY(-2px);
-        }
-
-        /* Scrollbar */
-        ::-webkit-scrollbar {
-            width: 12px;
-        }
-
-        ::-webkit-scrollbar-track {
-            background: rgba(0, 0, 0, 0.5);
-            border-radius: 10px;
-        }
-
-        ::-webkit-scrollbar-thumb {
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            border-radius: 10px;
-            border: 2px solid rgba(0, 0, 0, 0.5);
-        }
-
-        ::-webkit-scrollbar-thumb:hover {
-            background: linear-gradient(135deg, #764ba2 0%, #667eea 100%);
-        }
-
-        /* Responsive */
-        @media (max-width: 768px) {
-            .title {
-                font-size: 2.5rem;
-            }
-
-            .card {
-                padding: 24px;
-            }
-
-            .btn-container {
-                flex-direction: column;
-            }
-
-            .terminal {
-                width: 100%;
-                margin-left: 0;
-            }
-        }
-        
-        .container {
-            max-width: 1200px;
-            margin: 0 auto;
-        }
-
-        .header {
-            text-align: center;
-            color: white;
-            margin-bottom: 40px;
-        }
-
-        .header h1 {
-            font-size: 3rem;
-            margin-bottom: 10px;
-            text-shadow: 2px 2px 4px rgba(0,0,0,0.3);
-        }
-
-        .header p {
-            font-size: 1.2rem;
-            opacity: 0.9;
-        }
-
-        .card {
-            background: white;
-            border-radius: 15px;
-            padding: 30px;
-            box-shadow: 0 10px 40px rgba(0,0,0,0.2);
-            margin-bottom: 30px;
-        }
-
-        .input-group {
-            display: flex;
-            gap: 10px;
-            margin-bottom: 20px;
-        }
-
-        .input-group input {
-            flex: 1;
-            padding: 15px;
-            border: 2px solid #e0e0e0;
-            border-radius: 8px;
-            font-size: 1rem;
-            transition: border 0.3s;
-        }
-
-        .input-group input:focus {
-            outline: none;
-            border-color: #667eea;
-        }
-
-        .btn {
-            padding: 15px 30px;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            color: white;
-            border: none;
-            border-radius: 8px;
-            font-size: 1rem;
-            font-weight: bold;
-            cursor: pointer;
-            transition: transform 0.2s, box-shadow 0.2s;
-        }
-
-        .btn:hover {
-            transform: translateY(-2px);
-            box-shadow: 0 5px 20px rgba(102, 126, 234, 0.4);
-        }
-
-        .btn:disabled {
-            opacity: 0.5;
-            cursor: not-allowed;
-            transform: none;
-        }
-
-        .terminal {
-            background: #1e1e1e;
-            border-radius: 10px;
-            padding: 20px;
-            font-family: 'Courier New', monospace;
-            color: #00ff00;
-            font-size: 1.1rem;
-            min-height: 546px;
-            max-height: 728px;
-            overflow-y: auto;
-            margin-bottom: 20px;
-            display: none;
-            width: 130%;
-            margin-left: -15%;
-        }
-
-        .terminal.active {
-            display: block;
-        }
-
-        .terminal-line {
-            margin-bottom: 5px;
-            white-space: pre-wrap;
+            color: var(--text-secondary);
             word-break: break-all;
         }
 
-        .terminal-input {
-            display: none;
-            gap: 10px;
-            margin-top: 15px;
+        .file-details strong {
+            color: var(--accent);
+            font-weight: 600;
+            min-width: 100px;
+            display: inline-block;
+            margin-right: 12px;
+        }
+
+        /* Custom Audio Player */
+        .custom-player {
+            background: rgba(0, 0, 0, 0.4);
+            border-radius: 40px;
+            padding: 20px;
+            margin-bottom: 20px;
+            border: 1px solid var(--card-border);
+            box-shadow: inset 0 0 10px rgba(0,0,0,0.5);
+        }
+
+        .player-controls {
+            display: flex;
+            align-items: center;
+            gap: 20px;
             flex-wrap: wrap;
         }
 
-        .terminal-input.active {
+        .play-pause-btn {
+            width: 60px;
+            height: 60px;
+            border-radius: 50%;
+            background: var(--btn-bg);
+            border: 2px solid var(--accent);
+            color: var(--accent);
+            font-size: 2rem;
             display: flex;
-        }
-
-        .numpad {
-            display: grid;
-            grid-template-columns: repeat(4, 1fr);
-            gap: 10px;
-            max-width: 600px;
-        }
-
-        .numpad-btn {
-            padding: 15px;
-            background: linear-gradient(135deg, #00ff00 0%, #00cc00 100%);
-            color: #1e1e1e;
-            border: none;
-            border-radius: 8px;
-            font-weight: bold;
-            font-size: 1.2rem;
+            align-items: center;
+            justify-content: center;
             cursor: pointer;
-            transition: all 0.3s;
-            font-family: 'Courier New', monospace;
+            transition: all 0.2s;
+            box-shadow: 0 0 15px var(--accent-dim);
+            line-height: 1;
+            padding-bottom: 2px;
         }
 
-        .numpad-btn:hover {
-            transform: translateY(-2px);
-            box-shadow: 0 5px 15px rgba(0, 255, 0, 0.4);
-            background: linear-gradient(135deg, #00ff41 0%, #00dd00 100%);
+        .play-pause-btn:hover {
+            background: var(--accent);
+            color: #000;
+            transform: scale(1.05);
         }
 
-        .numpad-btn:active {
-            transform: translateY(0);
+        .time-display {
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 1rem;
+            color: var(--accent);
+            min-width: 120px;
         }
 
-        .numpad-btn:disabled {
-            opacity: 0.5;
-            cursor: not-allowed;
-            transform: none;
-        }
-
-        .file-info {
-            background: #f5f5f5;
-            border-radius: 10px;
-            padding: 20px;
-            margin-bottom: 20px;
-            display: none;
-        }
-
-        .file-info.active {
-            display: block;
-        }
-
-        .file-info h3 {
-            color: #333;
-            margin-bottom: 15px;
-        }
-
-        .file-details {
-            font-family: 'Courier New', monospace;
-            background: #fff;
-            padding: 15px;
-            border-radius: 5px;
-            margin-bottom: 15px;
-            border-left: 4px solid #667eea;
-        }
-
-        .file-details p {
-            margin: 8px 0;
-            color: #555;
-        }
-
-        .file-details strong {
-            color: #333;
-        }
-
-        .file-actions-row {
+        .progress-container {
+            flex: 1;
             display: flex;
+            align-items: center;
             gap: 10px;
         }
 
-        .delete-btn {
-            padding: 10px 20px;
-            background: #f44336;
-            color: white;
-            border: none;
-            border-radius: 5px;
+        .progress-bar {
+            flex: 1;
+            height: 8px;
+            background: rgba(255, 255, 255, 0.1);
+            border-radius: 4px;
             cursor: pointer;
-            transition: all 0.3s;
-            font-weight: bold;
+            position: relative;
         }
 
-        .delete-btn:hover {
-            background: #d32f2f;
-            box-shadow: 0 5px 15px rgba(244, 67, 54, 0.4);
+        .progress-fill {
+            height: 100%;
+            background: var(--accent);
+            border-radius: 4px;
+            width: 0%;
+            transition: width 0.1s linear;
         }
 
-        /* ANSI Color Classes */
-        .ansi-red { color: #ff0051; }
-        .ansi-green { color: #00ff41; }
-        .ansi-yellow { color: #ffff00; }
-        .ansi-blue { color: #0099ff; }
-        .ansi-magenta { color: #ff00ff; }
-        .ansi-cyan { color: #00ffff; }
-        .ansi-white { color: #ffffff; }
-        .ansi-bold { font-weight: bold; }
-
-        .audio-player {
-            background: #f5f5f5;
-            border-radius: 10px;
-            padding: 20px;
-            margin-bottom: 20px;
-            display: none;
+        .volume-control {
+            display: flex;
+            align-items: center;
+            gap: 8px;
         }
 
-        .audio-player.active {
-            display: block;
+        .volume-btn {
+            background: none;
+            border: none;
+            color: var(--text-secondary);
+            font-size: 1.5rem;
+            cursor: pointer;
+            transition: color 0.2s;
+            display: flex;
+            align-items: center;
+            justify-content: center;
         }
 
-        .audio-player h3 {
-            margin-bottom: 15px;
-            color: #333;
+        .volume-btn:hover {
+            color: var(--accent);
         }
 
-        .audio-player audio {
+        .volume-slider {
+            width: 80px;
+            height: 4px;
+            background: rgba(255, 255, 255, 0.1);
+            border-radius: 2px;
+            cursor: pointer;
+            position: relative;
+        }
+
+        .volume-fill {
+            height: 100%;
+            background: var(--accent);
+            border-radius: 2px;
             width: 100%;
-            margin-bottom: 15px;
         }
 
-        .download-btn {
-            display: inline-block;
-            padding: 10px 20px;
-            background: #4caf50;
-            color: white;
+        input[type=range] {
+            display: none;
+        }
+
+        /* Custom Download Button */
+        .download-btn-container {
+            display: flex;
+            justify-content: center;
+            margin-top: 20px;
+        }
+
+        .download-label {
+            background-color: transparent;
+            border: 2px solid var(--accent);
+            display: inline-flex;
+            align-items: center;
+            border-radius: 50px;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            padding: 5px;
             text-decoration: none;
-            border-radius: 5px;
-            transition: background 0.3s;
+            color: var(--text-primary);
         }
 
-        .download-btn:hover {
-            background: #45a049;
+        .download-label:hover {
+            border-color: #88ff88;
+            box-shadow: var(--accent-glow);
+        }
+
+        .download-circle {
+            height: 45px;
+            width: 45px;
+            border-radius: 50%;
+            background-color: var(--accent);
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            transition: all 0.3s ease;
+            box-shadow: 0 0 10px var(--accent-dim);
+        }
+
+        .download-circle svg {
+            color: #000;
+            width: 30px;
+            stroke: currentColor;
+            stroke-width: 2;
+        }
+
+        .download-text {
+            font-size: 17px;
+            font-weight: 600;
+            color: var(--text-primary);
+            margin-left: 12px;
+            margin-right: 18px;
+            transition: color 0.3s ease;
+        }
+
+        .download-label:hover .download-text {
+            color: var(--accent);
+        }
+
+        /* Status messages */
+        #status {
+            margin-top: 20px;
         }
 
         .status {
-            padding: 10px;
-            border-radius: 5px;
-            margin-bottom: 15px;
-            text-align: center;
-            font-weight: bold;
+            padding: 16px 24px;
+            border-radius: 14px;
+            font-size: 0.9rem;
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            background: rgba(0,0,0,0.5);
+            backdrop-filter: blur(10px);
+            border-left: 4px solid;
+            animation: slideIn 0.3s ease;
+        }
+
+        @keyframes slideIn {
+            from { opacity: 0; transform: translateY(-10px); }
+            to { opacity: 1; transform: translateY(0); }
         }
 
         .status.info {
-            background: #e3f2fd;
-            color: #1976d2;
+            border-color: #3399ff;
+            color: #aaccff;
         }
-
         .status.success {
-            background: #e8f5e9;
-            color: #388e3c;
+            border-color: #00ff88;
+            color: #aaffcc;
         }
-
         .status.error {
-            background: #ffebee;
-            color: #d32f2f;
+            border-color: #ff5555;
+            color: #ffaaaa;
         }
 
-        @keyframes pulse {
-            0%, 100% { opacity: 1; }
-            50% { opacity: 0.5; }
+        /* ANSI colors for terminal */
+        .ansi-red { color: #ff5555; }
+        .ansi-green { color: #aaffaa; }
+        .ansi-yellow { color: #ffff88; }
+        .ansi-blue { color: #8888ff; }
+        .ansi-magenta { color: #ff88ff; }
+        .ansi-cyan { color: #88ffff; }
+        .ansi-white { color: #ffffff; }
+        .ansi-bold { font-weight: bold; }
+        .ansi-blink { animation: blink 1s infinite; }
+
+        @keyframes blink {
+            0%,50% { opacity: 1; }
+            51%,100% { opacity: 0.3; }
         }
 
-        .loading {
-            animation: pulse 1.5s infinite;
-        }
+        /* Scrollbar */
+        ::-webkit-scrollbar { width: 8px; }
+        ::-webkit-scrollbar-track { background: #0a0a0a; }
+        ::-webkit-scrollbar-thumb { background: #2a2a2a; border-radius: 4px; }
+        ::-webkit-scrollbar-thumb:hover { background: #3a3a3a; }
 
-        ::-webkit-scrollbar {
-            width: 10px;
+        /* Animations */
+        @keyframes fadeInDown {
+            from { opacity: 0; transform: translateY(-30px); }
+            to { opacity: 1; transform: translateY(0); }
         }
-
-        ::-webkit-scrollbar-track {
-            background: #2d2d2d;
-        }
-
-        ::-webkit-scrollbar-thumb {
-            background: #00ff00;
-            border-radius: 5px;
+        @keyframes fadeInUp {
+            from { opacity: 0; transform: translateY(30px); }
+            to { opacity: 1; transform: translateY(0); }
         }
     </style>
 </head>
 <body>
     <div class="container">
         <div class="header">
-            <div class="logo-container">
-                <div class="logo-icon">🎵</div>
-                <h1 class="title">YTMP3-DL</h1>
-            </div>
-            <p class="subtitle">Professional Audio Extraction System</p>
+            <div class="logo">YTMP3-DL</div>
+            <div class="tagline">OLED · TERMINAL · LOCAL</div>
         </div>
 
-        <div class="card glass input-section">
-            <label class="input-label">🎯 YouTube URL</label>
+        <!-- Input Card -->
+        <div class="glass input-card">
+            <label class="input-label">🔗 YouTube URL</label>
             <div class="input-wrapper">
-                <span class="input-icon">🔗</span>
-                <input type="text" id="urlInput" class="url-input" placeholder="https://youtube.com/watch?v=..." />
-            </div>
-            <div class="btn-container">
+                <input type="text" id="urlInput" placeholder="https://youtube.com/watch?v=..." />
                 <button class="btn btn-primary" id="convertBtn" onclick="startConversion()">
-                    <span class="btn-icon">⚡</span>
-                    Start Conversion
+                    <span class="btn-icon">⚡</span> Convert
                 </button>
-                <button class="btn btn-secondary" id="clearBtn">
-                    <span class="btn-icon">🗑️</span>
-                    Clear Queue
+                <button class="btn btn-secondary" id="clearBtn" onclick="clearTerminal()">
+                    <span class="btn-icon">🗑️</span> Clear
                 </button>
             </div>
             <div id="status"></div>
         </div>
 
-        <div class="card glass terminal-card">
-            <h3 class="terminal-header-text">Terminal Output</h3>
+        <!-- Terminal Card (hidden by default) -->
+        <div class="glass terminal-card" id="terminalCard">
+            <div class="terminal-header">
+                <svg viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5">
+                    <path d="M4 17l6-6-6-6M12 19h8" />
+                </svg>
+                <span>TERMINAL OUTPUT</span>
+            </div>
             <div class="terminal" id="terminal"></div>
             <div class="terminal-input" id="terminalInput">
                 <div class="numpad">
@@ -995,24 +675,59 @@ HTML_TEMPLATE = r"""
             </div>
         </div>
 
-        <div class="file-info glass" id="fileInfo">
-            <h3>📁 File Information</h3>
-            <div class="file-details" id="fileDetails"></div>
-            <div class="file-actions-row">
-                <button class="delete-btn" onclick="deleteFile()">
-                    <span>🗑️</span>
-                    Delete from Server
-                </button>
+        <!-- File Info Card -->
+        <div class="glass file-card" id="fileInfo">
+            <div class="card-title">
+                <svg viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5">
+                    <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8l-6-6z" />
+                    <path d="M14 2v6h6" />
+                </svg>
+                FILE INFORMATION
             </div>
+            <div class="file-details" id="fileDetails"></div>
         </div>
 
-        <div class="audio-player glass" id="audioPlayer">
-            <h3>🎧 Your Audio is Ready!</h3>
-            <audio controls id="audioElement"></audio>
-            <a href="#" class="download-btn" id="downloadBtn" download>
-                <span>⬇️</span>
-                Download File
-            </a>
+        <!-- Audio Player Card with Custom Player -->
+        <div class="glass audio-card" id="audioPlayer">
+            <div class="card-title">
+                <svg viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5">
+                    <path d="M9 18V5l12-2v13" />
+                    <circle cx="6" cy="18" r="3" />
+                    <circle cx="18" cy="16" r="3" />
+                </svg>
+                AUDIO READY
+            </div>
+            <!-- Hidden native audio element -->
+            <audio id="audioElement" style="display: none;" preload="metadata"></audio>
+            <!-- Custom Player Controls -->
+            <div class="custom-player">
+                <div class="player-controls">
+                    <div class="play-pause-btn" id="playPauseBtn">▶</div>
+                    <div class="time-display" id="timeDisplay">00:00 / 00:00</div>
+                    <div class="progress-container">
+                        <div class="progress-bar" id="progressBar">
+                            <div class="progress-fill" id="progressFill"></div>
+                        </div>
+                    </div>
+                    <div class="volume-control">
+                        <button class="volume-btn" id="muteBtn">🔊</button>
+                        <div class="volume-slider" id="volumeSlider">
+                            <div class="volume-fill" id="volumeFill" style="width: 100%;"></div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <!-- Custom Download Button -->
+            <div class="download-btn-container">
+                <a href="#" class="download-label" id="downloadBtn" download onclick="handleDownload(event)">
+                    <span class="download-circle">
+                        <svg aria-hidden="true" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                            <path stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M12 19V5m0 14-4-4m4 4 4-4" />
+                        </svg>
+                    </span>
+                    <span class="download-text">Download</span>
+                </a>
+            </div>
         </div>
     </div>
 
@@ -1022,19 +737,140 @@ HTML_TEMPLATE = r"""
         let inputLocked = false;
         let currentFilename = null;
 
-        socket.on('connect', () => {
-            console.log('Connected to server');
+        // Audio player elements
+        const audio = document.getElementById('audioElement');
+        const playPauseBtn = document.getElementById('playPauseBtn');
+        const timeDisplay = document.getElementById('timeDisplay');
+        const progressBar = document.getElementById('progressBar');
+        const progressFill = document.getElementById('progressFill');
+        const muteBtn = document.getElementById('muteBtn');
+        const volumeSlider = document.getElementById('volumeSlider');
+        const volumeFill = document.getElementById('volumeFill');
+
+        // Audio player state
+        let isPlaying = false;
+        let isMuted = false;
+        let volume = 1.0;
+
+        // Update play button based on playback state
+        audio.addEventListener('play', () => {
+            isPlaying = true;
+            playPauseBtn.textContent = '⏸';
+        });
+        audio.addEventListener('pause', () => {
+            isPlaying = false;
+            playPauseBtn.textContent = '▶';
+        });
+        audio.addEventListener('ended', () => {
+            isPlaying = false;
+            playPauseBtn.textContent = '▶';
+            progressFill.style.width = '0%';
+            timeDisplay.textContent = formatTime(0) + ' / ' + formatTime(audio.duration);
         });
 
+        // Update time display and progress bar
+        audio.addEventListener('timeupdate', () => {
+            const current = audio.currentTime;
+            const duration = audio.duration || 0;
+            if (duration) {
+                const percent = (current / duration) * 100;
+                progressFill.style.width = percent + '%';
+                timeDisplay.textContent = formatTime(current) + ' / ' + formatTime(duration);
+            }
+        });
+
+        // When metadata is loaded, update duration display immediately
+        audio.addEventListener('loadedmetadata', () => {
+            const duration = audio.duration || 0;
+            timeDisplay.textContent = '00:00 / ' + formatTime(duration);
+        });
+
+        // Seek when clicking on progress bar
+        progressBar.addEventListener('click', (e) => {
+            const rect = progressBar.getBoundingClientRect();
+            const clickX = e.clientX - rect.left;
+            const width = rect.width;
+            const percent = clickX / width;
+            if (audio.duration) {
+                audio.currentTime = percent * audio.duration;
+            }
+        });
+
+        // Volume control
+        volumeSlider.addEventListener('click', (e) => {
+            const rect = volumeSlider.getBoundingClientRect();
+            const clickX = e.clientX - rect.left;
+            const width = rect.width;
+            const percent = Math.min(1, Math.max(0, clickX / width));
+            volume = percent;
+            audio.volume = volume;
+            volumeFill.style.width = (volume * 100) + '%';
+            updateMuteIcon();
+        });
+
+        muteBtn.addEventListener('click', () => {
+            if (isMuted) {
+                audio.muted = false;
+                isMuted = false;
+                audio.volume = volume;
+                volumeFill.style.width = (volume * 100) + '%';
+                muteBtn.textContent = '🔊';
+            } else {
+                audio.muted = true;
+                isMuted = true;
+                volumeFill.style.width = '0%';
+                muteBtn.textContent = '🔇';
+            }
+        });
+
+        function updateMuteIcon() {
+            if (volume === 0) {
+                muteBtn.textContent = '🔇';
+                isMuted = true;
+                audio.muted = true;
+            } else {
+                muteBtn.textContent = '🔊';
+                isMuted = false;
+                audio.muted = false;
+            }
+        }
+
+        function formatTime(seconds) {
+            if (isNaN(seconds)) return '00:00';
+            const mins = Math.floor(seconds / 60);
+            const secs = Math.floor(seconds % 60);
+            return mins.toString().padStart(2, '0') + ':' + secs.toString().padStart(2, '0');
+        }
+
+        // Toggle play/pause
+        playPauseBtn.addEventListener('click', () => {
+            if (audio.src) {
+                if (audio.paused) {
+                    audio.play();
+                } else {
+                    audio.pause();
+                }
+            }
+        });
+
+        socket.on('connect', () => console.log('Connected'));
+
         socket.on('terminal_output', (data) => {
+            // Skip lines containing warnings
+            if (data.output.includes('warnings.warn') || 
+                data.output.includes('RequestsDependencyWarning') || 
+                data.output.includes('urllib3') || 
+                data.output.includes('chardet')) {
+                return;
+            }
+
             const terminal = document.getElementById('terminal');
             const line = document.createElement('div');
             line.className = 'terminal-line';
             line.innerHTML = parseANSI(data.output);
             terminal.appendChild(line);
             terminal.scrollTop = terminal.scrollHeight;
-            
-            // Check if output is asking for input
+
             const text = data.output.toLowerCase();
             if (!inputLocked && (text.includes('select') || text.includes('[1-9]') || text.includes('»') || text.includes('quality'))) {
                 setTimeout(() => {
@@ -1043,7 +879,7 @@ HTML_TEMPLATE = r"""
             }
         });
 
-        socket.on('request_input', (data) => {
+        socket.on('request_input', () => {
             if (!inputLocked) {
                 setTimeout(() => {
                     document.getElementById('terminalInput').classList.add('active');
@@ -1052,67 +888,70 @@ HTML_TEMPLATE = r"""
         });
 
         socket.on('download_ready', (data) => {
-            showStatus('Download complete! File ready.', 'success');
-            document.getElementById('terminal').classList.remove('active');
+            showStatus('Download complete!', 'success');
             document.getElementById('terminalInput').classList.remove('active');
+            document.getElementById('terminalCard').classList.remove('active'); // Hide terminal
             inputLocked = false;
             currentFilename = data.filename;
-            
-            // Setup audio player
+
             const audioPlayer = document.getElementById('audioPlayer');
-            const audioElement = document.getElementById('audioElement');
             const downloadBtn = document.getElementById('downloadBtn');
-            
-            audioElement.src = data.file_url;
-            downloadBtn.href = data.file_url;
+
+            // Set audio source to streaming endpoint (supports range requests)
+            audio.src = `/api/stream-file/${data.filename}`;
+            // Set download button to download endpoint (forces attachment)
+            downloadBtn.href = `/api/download-file/${data.filename}`;
             downloadBtn.download = data.filename;
-            
             audioPlayer.classList.add('active');
-            
-            // Show file info
+
             const fileInfo = document.getElementById('fileInfo');
             const fileDetails = document.getElementById('fileDetails');
             fileDetails.innerHTML = `
-                <p><strong>📝 File Name:</strong> ${data.filename}</p>
-                <p><strong>📍 Server Location:</strong> ${data.remote_path}</p>
-                <p><strong>💾 Local Path:</strong> ${data.local_path}</p>
-                <p><strong>📊 File Size:</strong> ${data.size}</p>
+                <p><strong>File Name:</strong> ${data.filename}</p>
+                <p><strong>Size:</strong> ${data.size}</p>
             `;
             fileInfo.classList.add('active');
-            
+
             document.getElementById('convertBtn').disabled = false;
+
+            // Scroll to bottom after download is ready
+            setTimeout(() => {
+                document.documentElement.scrollTop = document.documentElement.scrollHeight;
+                document.body.scrollTop = document.body.scrollHeight;
+            }, 300);
         });
 
         socket.on('file_deleted', (data) => {
-            showStatus(data.message, 'success');
+            showStatus('File deleted. Ready for new conversion!', 'success');
             document.getElementById('fileInfo').classList.remove('active');
             document.getElementById('audioPlayer').classList.remove('active');
-            
-            // Stop and clear audio
-            const audioElement = document.getElementById('audioElement');
-            audioElement.pause();
-            audioElement.currentTime = 0;
-            audioElement.src = '';
+            audio.pause();
+            audio.src = '';
+            currentFilename = null;
+            document.getElementById('urlInput').value = '';
+            document.getElementById('convertBtn').disabled = false;
+            // Reset player UI
+            playPauseBtn.textContent = '▶';
+            progressFill.style.width = '0%';
+            timeDisplay.textContent = '00:00 / 00:00';
         });
 
         socket.on('error', (data) => {
             showStatus('Error: ' + data.message, 'error');
             document.getElementById('convertBtn').disabled = false;
-            document.getElementById('terminal').classList.remove('active');
             document.getElementById('terminalInput').classList.remove('active');
+            document.getElementById('terminalCard').classList.remove('active'); // Hide terminal on error too
             inputLocked = false;
         });
 
         function startConversion() {
             const url = document.getElementById('urlInput').value.trim();
-            
             if (!url) {
                 showStatus('Please enter a YouTube URL', 'error');
                 return;
             }
-
             if (!url.includes('youtube.com') && !url.includes('youtu.be')) {
-                showStatus('Please enter a valid YouTube URL', 'error');
+                showStatus('Enter a valid YouTube URL', 'error');
                 return;
             }
 
@@ -1120,59 +959,68 @@ HTML_TEMPLATE = r"""
             document.getElementById('audioPlayer').classList.remove('active');
             document.getElementById('fileInfo').classList.remove('active');
             document.getElementById('terminal').innerHTML = '';
-            document.getElementById('terminal').classList.add('active');
+            document.getElementById('terminalCard').classList.add('active'); // Show terminal
+            
+            // Auto-scroll to the very bottom of the webpage after terminal renders
+            setTimeout(() => {
+                document.documentElement.scrollTop = document.documentElement.scrollHeight;
+                document.body.scrollTop = document.body.scrollHeight;
+                window.scrollTo(0, document.body.scrollHeight);
+            }, 1000);
+            
             inputLocked = false;
-            
             showStatus('Starting conversion...', 'info');
-            
+
             sessionId = Date.now().toString();
             socket.emit('start_conversion', { url: url, session_id: sessionId });
         }
 
-        function sendNumpad(value) {
-            if (inputLocked) {
-                return; // Prevent multiple inputs
-            }
+        function clearTerminal() {
+            document.getElementById('terminal').innerHTML = '';
+        }
 
-            // Lock input immediately
+        function sendNumpad(value) {
+            if (inputLocked) return;
             inputLocked = true;
 
-            // Disable all numpad buttons
             const buttons = document.querySelectorAll('.numpad-btn');
             buttons.forEach(btn => btn.disabled = true);
-            
-            // Echo the input to terminal
+
             const terminal = document.getElementById('terminal');
             const line = document.createElement('div');
             line.className = 'terminal-line';
-            line.innerHTML = `<span class="ansi-cyan"><span class="ansi-bold">» ${value}</span></span>`;
+            line.innerHTML = `<span class="ansi-cyan ansi-bold">» ${value}</span>`;
             terminal.appendChild(line);
             terminal.scrollTop = terminal.scrollHeight;
-            
-            // Hide numpad after selection
-            document.getElementById('terminalInput').classList.remove('active');
-            
-            // Send to backend
-            socket.emit('terminal_input', { 
-                session_id: sessionId, 
-                input: value 
-            });
 
-            // Re-enable buttons after a delay (for next conversion)
+            document.getElementById('terminalInput').classList.remove('active');
+
+            socket.emit('terminal_input', { session_id: sessionId, input: value });
+
             setTimeout(() => {
                 buttons.forEach(btn => btn.disabled = false);
             }, 3000);
         }
 
-        function deleteFile() {
-            if (!currentFilename) {
-                showStatus('No file to delete', 'error');
-                return;
-            }
-
-            if (confirm(`Are you sure you want to delete "${currentFilename}" from the server?`)) {
-                socket.emit('delete_file', { filename: currentFilename });
-            }
+        function handleDownload(event) {
+            event.preventDefault();
+            const downloadBtn = document.getElementById('downloadBtn');
+            const href = downloadBtn.href;
+            
+            // Trigger download
+            const link = document.createElement('a');
+            link.href = href;
+            link.download = currentFilename;
+            document.body.appendChild(link);
+            link.click();
+            document.body.removeChild(link);
+            
+            // Auto-delete file after download and reset UI
+            setTimeout(() => {
+                if (currentFilename) {
+                    socket.emit('delete_file', { filename: currentFilename });
+                }
+            }, 500);
         }
 
         function showStatus(message, type) {
@@ -1181,14 +1029,10 @@ HTML_TEMPLATE = r"""
         }
 
         function parseANSI(text) {
-            // Strip all ANSI escape codes first, then re-add as HTML
-            // Remove clear screen and cursor movement codes
             text = text.replace(/\033\[\d*[HJKABCDEFGST]/g, '');
             text = text.replace(/\033\[2J/g, '');
             text = text.replace(/\033\[\?25[hl]/g, '');
             text = text.replace(/\033\[\d+;\d+H/g, '');
-            
-            // Convert ANSI color codes to HTML spans
             text = text.replace(/\033\[91m/g, '<span class="ansi-red">');
             text = text.replace(/\033\[92m/g, '<span class="ansi-green">');
             text = text.replace(/\033\[93m/g, '<span class="ansi-yellow">');
@@ -1197,40 +1041,33 @@ HTML_TEMPLATE = r"""
             text = text.replace(/\033\[96m/g, '<span class="ansi-cyan">');
             text = text.replace(/\033\[97m/g, '<span class="ansi-white">');
             text = text.replace(/\033\[1m/g, '<span class="ansi-bold">');
+            text = text.replace(/\033\[5m/g, '<span class="ansi-blink">');
             text = text.replace(/\033\[0m/g, '</span>');
-            text = text.replace(/\033\[5m/g, ''); // Remove blink
-            
-            // Handle any remaining escape codes
             text = text.replace(/\033\[\d+m/g, '</span>');
-            
             return text;
         }
 
-        // Handle keyboard input (1-9 and 0 for 10)
-        document.addEventListener('DOMContentLoaded', () => {
-            document.getElementById('urlInput').addEventListener('keypress', (e) => {
-                if (e.key === 'Enter') {
-                    startConversion();
-                }
-            });
+        document.getElementById('urlInput').addEventListener('keypress', (e) => {
+            if (e.key === 'Enter') startConversion();
+        });
 
-            // Keyboard shortcuts for numpad
-            document.addEventListener('keydown', (e) => {
-                if (inputLocked) return; // Don't accept input when locked
-
-                const numpadActive = document.getElementById('terminalInput').classList.contains('active');
-                if (numpadActive) {
-                    if (e.key >= '1' && e.key <= '8') {
-                        sendNumpad(e.key);
-                        e.preventDefault();
-                    }
+        document.addEventListener('keydown', (e) => {
+            if (inputLocked) return;
+            if (document.getElementById('terminalInput').classList.contains('active')) {
+                if (e.key >= '1' && e.key <= '8') {
+                    sendNumpad(e.key);
+                    e.preventDefault();
                 }
-            });
+            }
         });
     </script>
 </body>
 </html>
 """
+
+# ----------------------------------------------------------------------
+# Backend – No SFTP, direct file serving with range support
+# ----------------------------------------------------------------------
 
 @app.route('/')
 def index():
@@ -1240,11 +1077,10 @@ def index():
 def handle_conversion(data):
     url = data['url']
     session_id = data['session_id']
-    client_id = request.sid  # Get unique client socket ID
+    client_id = request.sid
     
     print(f"[+] Starting conversion for: {url} (Client: {client_id})")
     
-    # Start the conversion in a separate thread
     thread = threading.Thread(target=run_conversion, args=(url, session_id, client_id))
     thread.daemon = True
     thread.start()
@@ -1257,8 +1093,6 @@ def handle_terminal_input(data):
     
     if session_id in active_processes:
         process_info = active_processes[session_id]
-        
-        # Only allow input from the client that started this session
         if process_info['client_id'] != client_id:
             print(f"[!] Blocked input from unauthorized client: {client_id}")
             return
@@ -1273,14 +1107,12 @@ def handle_terminal_input(data):
 
 def run_conversion(url, session_id, client_id):
     try:
-        # Run the mp3.py script
         script_path = os.path.join(os.path.dirname(__file__), 'mp3.py')
         
         if not os.path.exists(script_path):
             socketio.emit('error', {'message': 'mp3.py not found!'}, room=client_id)
             return
         
-        # Start the process with unbuffered output
         env = os.environ.copy()
         env['PYTHONUNBUFFERED'] = '1'
         
@@ -1298,10 +1130,9 @@ def run_conversion(url, session_id, client_id):
         active_processes[session_id] = {
             'process': process,
             'url': url,
-            'client_id': client_id  # Store which client owns this session
+            'client_id': client_id
         }
         
-        # Read output character by character for immediate display
         output_buffer = ""
         while True:
             char = process.stdout.read(1)
@@ -1310,11 +1141,14 @@ def run_conversion(url, session_id, client_id):
             
             output_buffer += char
             
-            # Send line when newline is encountered - ONLY to the specific client
             if char == '\n':
+                # Skip lines containing warnings
+                if any(x in output_buffer for x in ['warnings.warn', 'RequestsDependencyWarning', 'urllib3', 'chardet']):
+                    output_buffer = ""
+                    continue
+                    
                 socketio.emit('terminal_output', {'output': output_buffer.rstrip()}, room=client_id)
                 
-                # Check if asking for input
                 lower_buffer = output_buffer.lower()
                 if ('select' in lower_buffer and '[1-9]' in lower_buffer) or \
                    ('»' in output_buffer) or \
@@ -1325,85 +1159,56 @@ def run_conversion(url, session_id, client_id):
         
         process.wait()
         
-        # Download the file via SFTP
-        print("[+] Conversion complete, fetching file...")
-        socketio.emit('terminal_output', {'output': '\n[+] Fetching file from server...'}, room=client_id)
+        print("[+] Conversion complete, locating file...")
+        socketio.emit('terminal_output', {'output': '\n[+] Locating file...'}, room=client_id)
         
-        time.sleep(1)  # Give the file time to finish writing
-        downloaded_file = download_latest_file()
+        time.sleep(1)  # Give the file system a moment
+        file_info = get_latest_file()
         
-        if downloaded_file:
+        if file_info:
             socketio.emit('download_ready', {
-                'filename': downloaded_file['name'],
-                'file_url': f'/download/{downloaded_file["name"]}',
-                'remote_path': os.path.join(SFTP_DIR, downloaded_file['name']),
-                'local_path': os.path.join(os.getcwd(), 'downloads', downloaded_file['name']),
-                'size': format_size(downloaded_file['size'])
+                'filename': file_info['name'],
+                'size': format_size(file_info['size'])
             }, room=client_id)
         else:
-            socketio.emit('error', {'message': 'Failed to download file from server'}, room=client_id)
+            socketio.emit('error', {'message': 'No output file found'}, room=client_id)
         
-        # Cleanup
         if session_id in active_processes:
             del active_processes[session_id]
             
     except Exception as e:
         print(f"[!] Error: {e}")
+        traceback.print_exc()
         socketio.emit('error', {'message': str(e)}, room=client_id)
 
-def download_latest_file():
-    """Download the most recent file from SFTP server"""
+def get_latest_file():
+    """Get the most recent audio file from OUTPUT_DIR"""
     try:
-        # Create SSH client
-        ssh = paramiko.SSHClient()
-        ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+        if not os.path.exists(OUTPUT_DIR):
+            print(f"[!] Output directory does not exist: {OUTPUT_DIR}")
+            return None
         
-        print(f"[+] Connecting to {SFTP_HOST}...")
-        ssh.connect(SFTP_HOST, port=SFTP_PORT, username=SFTP_USER, password=SFTP_PASS)
-        
-        # Open SFTP session
-        sftp = ssh.open_sftp()
-        
-        # List files in download directory
         files = []
-        for item in sftp.listdir_attr(SFTP_DIR):
-            if item.filename.endswith(('.mp3', '.flac', '.wav', '.m4a', '.opus')):
+        for f in os.listdir(OUTPUT_DIR):
+            full_path = os.path.join(OUTPUT_DIR, f)
+            if os.path.isfile(full_path) and f.endswith(('.mp3', '.flac', '.wav', '.m4a', '.opus')):
                 files.append({
-                    'name': item.filename,
-                    'mtime': item.st_mtime,
-                    'size': item.st_size
+                    'name': f,
+                    'mtime': os.path.getmtime(full_path),
+                    'size': os.path.getsize(full_path)
                 })
         
         if not files:
-            print("[!] No audio files found")
-            sftp.close()
-            ssh.close()
             return None
         
-        # Get the most recent file
         latest = max(files, key=lambda x: x['mtime'])
-        
-        print(f"[+] Downloading: {latest['name']}")
-        
-        # Download to local storage
-        local_path = os.path.join('downloads', latest['name'])
-        os.makedirs('downloads', exist_ok=True)
-        
-        sftp.get(os.path.join(SFTP_DIR, latest['name']), local_path)
-        
-        print(f"[+] Downloaded: {latest['name']} ({latest['size']} bytes)")
-        
-        sftp.close()
-        ssh.close()
-        
         return latest
         
     except Exception as e:
-        print(f"[!] SFTP Error: {e}")
+        print(f"[!] Error scanning output directory: {e}")
         return None
 
 def format_size(bytes):
-    """Format bytes to human readable size"""
     for unit in ['B', 'KB', 'MB', 'GB']:
         if bytes < 1024.0:
             return f"{bytes:.2f} {unit}"
@@ -1415,77 +1220,121 @@ def handle_delete_file(data):
     filename = data['filename']
     client_id = request.sid
     
+    # Prevent path traversal
+    if '..' in filename or filename.startswith('/'):
+        socketio.emit('error', {'message': 'Invalid filename'}, room=client_id)
+        return
+    
     try:
-        # Delete from local storage
-        local_path = os.path.join('downloads', filename)
-        if os.path.exists(local_path):
-            os.remove(local_path)
-            print(f"[+] Deleted local file: {filename}")
-        
-        # Delete from remote server via SFTP
-        ssh = paramiko.SSHClient()
-        ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-        ssh.connect(SFTP_HOST, port=SFTP_PORT, username=SFTP_USER, password=SFTP_PASS)
-        sftp = ssh.open_sftp()
-        
-        remote_path = os.path.join(SFTP_DIR, filename)
-        sftp.remove(remote_path)
-        
-        sftp.close()
-        ssh.close()
-        
-        print(f"[+] Deleted remote file: {filename}")
-        
-        # Only send response to the client that requested deletion
-        socketio.emit('file_deleted', 
-                     {'message': f'Successfully deleted {filename} from server and local storage'},
-                     room=client_id)
+        file_path = os.path.join(OUTPUT_DIR, filename)
+        if os.path.exists(file_path):
+            os.remove(file_path)
+            print(f"[+] Deleted file: {filename}")
+            socketio.emit('file_deleted', 
+                         {'message': f'Successfully deleted {filename}'},
+                         room=client_id)
+        else:
+            print(f"[!] File not found: {filename}")
+            socketio.emit('error', 
+                         {'message': f'File not found: {filename}'}, 
+                         room=client_id)
         
     except Exception as e:
         print(f"[!] Delete error: {e}")
         socketio.emit('error', {'message': f'Failed to delete file: {str(e)}'}, room=client_id)
 
-@app.route('/download/<filename>')
+@app.route('/api/stream-file/<filename>')
+def stream_file(filename):
+    """Serve audio file for streaming with range support"""
+    # Prevent path traversal
+    if '..' in filename or filename.startswith('/'):
+        abort(400, description="Invalid filename")
+    
+    file_path = os.path.join(OUTPUT_DIR, filename)
+    if not os.path.exists(file_path):
+        abort(404, description="File not found")
+    
+    # Determine MIME type
+    mime_type = 'audio/mpeg'
+    if filename.endswith('.m4a'):
+        mime_type = 'audio/mp4'
+    elif filename.endswith('.flac'):
+        mime_type = 'audio/flac'
+    elif filename.endswith('.wav'):
+        mime_type = 'audio/wav'
+    elif filename.endswith('.opus'):
+        mime_type = 'audio/opus'
+    
+    # Enable range handling and set proper headers
+    response = send_file(file_path, mimetype=mime_type, conditional=True)
+    response.headers['Accept-Ranges'] = 'bytes'
+    response.headers['Cache-Control'] = 'no-cache, no-store, must-revalidate'
+    response.headers['Pragma'] = 'no-cache'
+    response.headers['Expires'] = '0'
+    return response
+
+@app.route('/api/download-file/<filename>')
 def download_file(filename):
-    """Serve downloaded audio file"""
+    """Serve audio file as download (attachment)"""
+    # Prevent path traversal
+    if '..' in filename or filename.startswith('/'):
+        abort(400, description="Invalid filename")
+    
+    file_path = os.path.join(OUTPUT_DIR, filename)
+    if not os.path.exists(file_path):
+        abort(404, description="File not found")
+    
+    # Determine MIME type
+    mime_type = 'audio/mpeg'
+    if filename.endswith('.m4a'):
+        mime_type = 'audio/mp4'
+    elif filename.endswith('.flac'):
+        mime_type = 'audio/flac'
+    elif filename.endswith('.wav'):
+        mime_type = 'audio/wav'
+    elif filename.endswith('.opus'):
+        mime_type = 'audio/opus'
+    
+    return send_file(file_path, mimetype=mime_type, as_attachment=True, download_name=filename)
+
+@app.route('/api/delete-file/<filename>', methods=['POST'])
+def delete_file_http(filename):
+    """HTTP endpoint for deleting files (used by sendBeacon on page unload)"""
+    # Prevent path traversal
+    if '..' in filename or filename.startswith('/'):
+        abort(400, description="Invalid filename")
+    
     try:
-        file_path = os.path.join('downloads', filename)
+        file_path = os.path.join(OUTPUT_DIR, filename)
         if os.path.exists(file_path):
-            # Get proper MIME type for audio files
-            mime_type = 'audio/mpeg'  # default
-            if filename.endswith('.m4a'):
-                mime_type = 'audio/mp4'
-            elif filename.endswith('.flac'):
-                mime_type = 'audio/flac'
-            elif filename.endswith('.wav'):
-                mime_type = 'audio/wav'
-            elif filename.endswith('.opus'):
-                mime_type = 'audio/opus'
-            
-            return send_file(file_path, mimetype=mime_type, as_attachment=False)
+            os.remove(file_path)
+            print(f"[+] Deleted file via HTTP: {filename}")
+            return {'status': 'success', 'message': f'Deleted {filename}'}, 200
         else:
-            return "File not found", 404
+            print(f"[!] File not found: {filename}")
+            return {'status': 'error', 'message': f'File not found: {filename}'}, 404
     except Exception as e:
-        return str(e), 500
+        print(f"[!] Delete error: {e}")
+        return {'status': 'error', 'message': f'Failed to delete: {str(e)}'}, 500
 
 if __name__ == '__main__':
     print("""
 ╔═══════════════════════════════════════════════════════════════╗
 ║                                                               ║
-║   YTMP3-DL WEB TERMINAL SERVER                                ║
+║   YTMP3-DL WEB TERMINAL · OLED EDITION (FINAL)                ║
 ║   Running on: http://localhost:1234                           ║
-║                                                               ║
-║   Features:                                                   ║
-║   ✓ Live terminal output with ANSI colors                     ║
-║   ✓ Interactive quality selection                             ║
-║   ✓ Automatic SFTP file retrieval                             ║
-║   ✓ Built-in audio player and download                        ║
+║   Output directory: /home/rasp-alex2/ytmp3-mp4/music-output   ║
+║   Terminal font: 0.8rem · Auto‑hide after completion          ║
+║   Filtered warnings · Auto‑scroll to terminal (fixed)         ║
+║   Auto-delete files after download · Custom audio player      ║
+║   Secure dual‑endpoint (stream + download) with range support ║
+║   Stylish download button (no "Open") · Backend warnings suppressed ║
 ║                                                               ║
 ╚═══════════════════════════════════════════════════════════════╝
     """)
     
-    # Create downloads directory
-    os.makedirs('downloads', exist_ok=True)
+    # Ensure output directory exists (optional)
+    if not os.path.exists(OUTPUT_DIR):
+        print(f"[!] Warning: Output directory {OUTPUT_DIR} does not exist. Please create it.")
     
-    # Run the server
     socketio.run(app, host='0.0.0.0', port=1234, debug=False)
