@@ -104,20 +104,42 @@ AUDIO_FORMATS = {
 def hacker_banner():
     """Display sick hacker-style banner"""
     clear()
-    print(f"{color.ERROR}")
-    print("╔═══════════════════════════════════════════════════════════════════════╗")
-    print("║                                                                       ║")
-    print(f"║  {color.BLINK}██{color.ERROR}╗   {color.BLINK}██{color.ERROR}╗████████╗{color.BLINK}███{color.ERROR}╗   {color.BLINK}███{color.ERROR}╗{color.BLINK}██████{color.ERROR}╗ {color.BLINK}██████{color.ERROR}╗       {color.BLINK}██████{color.ERROR}╗ ██{color.BLINK}╗     ║")
-    print(f"║  {color.WARNING}╚██╗ ██╔╝╚══██╔══╝████╗ ████║██╔══██╗╚════██╗      ██╔══██╗██║     ║")
-    print(f"║   {color.OKGREEN}╚████╔╝    ██║   ██╔████╔██║██████╔╝ █████╔╝█████╗██║  ██║██║     ║")
-    print(f"║   {color.OKCYAN}╚██╔╝     ██║   ██║╚██╔╝██║██╔═══╝  ╚═══██╗╚════╝██║  ██║██║     ║")
-    print(f"║    {color.PURPLE}██║      ██║   ██║ ╚═╝ ██║██║     ██████╔╝      ██████╔╝███████╗║")
-    print(f"║    {color.BLUE}╚═╝      ╚═╝   ╚═╝     ╚═╝╚═╝     ╚═════╝       ╚═════╝ ╚══════╝║")
-    print("║                                                                       ║")
-    print(f"║              {color.BOLD}{color.OKGREEN}[ AUDIO EXTRACTION SYSTEM v4.0 ]{color.ERROR}                   ║")
-    print(f"║              {color.OKCYAN}[ MAXIMUM QUALITY • MAXIMUM SPEED ]{color.ERROR}                 ║")
-    print("╚═══════════════════════════════════════════════════════════════════════╝")
-    print(f"{color.ENDC}")
+    
+    # Build the banner without inline colors first (proper spacing)
+    banner_lines = [
+        "╔═══════════════════════════════════════════════════════════════════════╗",
+        "║                                                                       ║",
+        "║  ██╗   ██╗████████╗███╗   ███╗██████╗ ██████╗       ██████╗ ██╗       ║",
+        "║  ╚██╗ ██╔╝╚══██╔══╝████╗ ████║██╔══██╗╚════██╗      ██╔══██╗██║       ║",
+        "║   ╚████╔╝    ██║   ██╔████╔██║██████╔╝ █████╔╝█████╗██║  ██║██║       ║",
+        "║    ╚██╔╝     ██║   ██║╚██╔╝██║██╔═══╝  ╚═══██╗╚════╝██║  ██║██║       ║",
+        "║     ██║      ██║   ██║ ╚═╝ ██║██║     ██████╔╝      ██████╔╝███████╗  ║",
+        "║     ╚═╝      ╚═╝   ╚═╝     ╚═╝╚═╝     ╚═════╝       ╚═════╝ ╚══════╝  ║",
+        "║                                                                       ║",
+        "║              [ AUDIO EXTRACTION SYSTEM v4.0 ]                         ║",
+        "║              [ MAXIMUM QUALITY • MAXIMUM SPEED ]                      ║",
+        "╚═══════════════════════════════════════════════════════════════════════╝"
+    ]
+    
+    # Apply colors to specific lines
+    colors_map = {
+        0: color.ERROR,
+        1: color.ERROR,
+        2: color.BLINK + color.ERROR,
+        3: color.BLINK + color.WARNING,
+        4: color.BLINK + color.OKGREEN,
+        5: color.BLINK + color.OKCYAN,
+        6: color.BLINK + color.PURPLE,
+        7: color.BLINK + color.BLUE,
+        8: color.ERROR,
+        9: color.BOLD + color.OKGREEN,
+        10: color.OKCYAN,
+        11: color.ERROR
+    }
+    
+    # Print each line with its color
+    for i, line in enumerate(banner_lines):
+        print(f"{colors_map.get(i, color.ERROR)}{line}{color.ENDC}")
 
 
 def display_quality_menu():
@@ -172,7 +194,7 @@ def get_quality_choice():
 
 def get_download_path():
     """Set default download directory"""
-    default_path = '/home/rasp-alex2/Downloads'
+    default_path = '/home/rasp-alex2/ytmp3-mp4/music-output'
     os.makedirs(default_path, exist_ok=True)
     return default_path
 
@@ -291,7 +313,7 @@ for option, value in cli_options:
         if value in AUDIO_FORMATS:
             quality_choice = value
         else:
-            print(f"{color.ERROR}[X] Invalid quality '{value}'. Must be 1-9.{color.ENDC}")
+            print(f"{color.ERROR}[X] Invalid quality '{value}'. Must be 1-8.{color.ENDC}")
             exit(1)
 
 # Display quality menu if not specified in command line
