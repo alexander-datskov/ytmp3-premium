@@ -24,7 +24,7 @@ app.config['SECRET_KEY'] = 'ytmp3-dl-secret-key-2024'
 socketio = SocketIO(app, cors_allowed_origins="*")
 
 # Output directory (where mp3.py saves files)
-OUTPUT_DIR = '~/ytmp3-mp4/music-output'
+OUTPUT_DIR = '~/ytmp3-premium/music-output'
 OUTPUT_DIR = os.path.expanduser(OUTPUT_DIR)
 
 # Active processes
@@ -1339,3 +1339,4 @@ if __name__ == '__main__':
         print(f"[!] Warning: Output directory {OUTPUT_DIR} does not exist. Please create it.")
     
     socketio.run(app, host='0.0.0.0', port=1234, debug=False)
+
