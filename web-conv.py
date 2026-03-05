@@ -46,7 +46,7 @@ HTML_TEMPLATE = r"""
     <title>YTMP3-DL · OLED Terminal</title>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.5.4/socket.io.js"></script>
     <style>
-        /* OLED Black Theme – Refined, better readability */
+               /* OLED Black Theme – Refined, better readability */
         :root {
             --bg: #000000;
             --card-bg: rgba(20, 20, 20, 0.7);
@@ -86,17 +86,6 @@ HTML_TEMPLATE = r"""
             display: block;
             padding: 20px;
             position: relative;
-        }
-
-        /* subtle animated grain */
-        body::after {
-            content: "";
-            position: fixed;
-            top: 0; left: 0; width: 100%; height: 100%;
-            background: url('data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIzMDAiIGhlaWdodD0iMzAwIj48ZmlsdGVyIGlkPSJmIj48ZmVUdXJidWxlbmNlIHR5cGU9ImZyYWN0YWxOb2lzZSIgYmFzZUZyZXF1ZW5jeT0iLjc0IiBudW1PY3RhdmVzPSIzIiAvPjwvZmlsdGVyPjxyZWN0IHdpZHRoPSIxMDAlIiBoZWlnaHQ9IjEwMCUiIGZpbHRlcj0idXJsKCNmKSIgb3BhY2l0eT0iMC4wNCIgLz48L3N2Zz4=');
-            pointer-events: none;
-            opacity: 0.3;
-            z-index: 0;
         }
 
         .container {
@@ -282,6 +271,7 @@ HTML_TEMPLATE = r"""
             font-weight: 500;
             min-height: 300px;
             max-height: 500px;
+            overflow-x: auto;  /* Allow horizontal scroll for long lines */
             overflow-y: auto;
             border: 1px solid #1a1a1a;
             box-shadow: inset 0 0 30px rgba(0,0,0,0.8), 0 0 20px rgba(0,255,136,0.1);
@@ -292,6 +282,21 @@ HTML_TEMPLATE = r"""
             white-space: pre-wrap;
             word-break: break-all;
             margin-bottom: 4px;
+        }
+
+        /* Mobile adjustments */
+        @media (max-width: 600px) {
+            .terminal {
+                font-size: 1rem;
+                max-height: 400px;
+                padding: 15px;
+            }
+            .terminal-line {
+                word-break: break-word;  /* Better wrapping for long words */
+            }
+            .glass {
+                border-radius: 20px;
+            }
         }
 
         /* Numpad */
@@ -1350,6 +1355,8 @@ def delete_file_http(filename):
 # ----------------------------------------------------------------------
 def start_cloudflare_tunnel():
     """Launch cloudflared tunnel, show logs until URL, then go completely silent (but keep running)."""
+    MAX_HYPHENS = 3  # e.g., "eagle-athletes-merger-wagner" has 3 hyphens
+
     try:
         process = subprocess.Popen(
             ['cloudflared', 'tunnel', '--url', 'http://localhost:1234'],
@@ -1375,21 +1382,27 @@ def start_cloudflare_tunnel():
                 if match:
                     tunnel_url = match.group(0)
                     url_found.set()
+
+                    # Check if the subdomain is too long (many hyphens)
+                    subdomain = tunnel_url.split('//')[1].split('.trycloudflare.com')[0]
+                    hyphen_count = subdomain.count('-')
+                    if hyphen_count > MAX_HYPHENS:
+                        print("\nℹ️  The tunnel subdomain is long ({} hyphens).".format(hyphen_count))
+                        print("   If you'd prefer a shorter one, it may take up to a minute –")
+                        print("   you can restart the app to try again.\n")
+
                     # Print the banner once
                     print("\n" + "="*60)
                     print("\n🌐  CLOUDFLARE TUNNEL ACTIVE: {}".format(tunnel_url))
                     print("\n" + "="*60 + "\n")
                     # From now on, silently consume all future output
-                    # (don't print anything else)
                     continue
             # After URL found, we still read but discard silently.
-            # (No print here)
         # If the loop ends (process died), check if we ever got the URL
         if not url_found.is_set():
             print("\n[!] Cloudflare tunnel process ended without providing a URL.")
             print("    Check your network or run without hiding logs to debug.\n")
         elif url_found.is_set():
-            # Tunnel died after we had a URL – warn the user
             print("\n[!] Cloudflare tunnel stopped unexpectedly.")
             print("    The public URL may no longer be accessible.\n")
 
