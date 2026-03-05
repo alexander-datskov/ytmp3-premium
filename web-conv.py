@@ -24,7 +24,8 @@ app.config['SECRET_KEY'] = 'ytmp3-dl-secret-key-2024'
 socketio = SocketIO(app, cors_allowed_origins="*")
 
 # Output directory (where mp3.py saves files)
-OUTPUT_DIR = '/home/rasp-alex2/ytmp3-mp4/music-output'
+OUTPUT_DIR = '~/ytmp3-mp4/music-output'
+OUTPUT_DIR = os.path.expanduser(OUTPUT_DIR)
 
 # Active processes
 active_processes = {}
@@ -1323,7 +1324,7 @@ if __name__ == '__main__':
 ║                                                               ║
 ║   YTMP3-DL WEB TERMINAL · OLED EDITION (FINAL)                ║
 ║   Running on: http://localhost:1234                           ║
-║   Output directory: /home/rasp-alex2/ytmp3-mp4/music-output   ║
+║   Output directory: ~/ytmp3-premium/music-output              ║
 ║   Terminal font: 0.8rem · Auto‑hide after completion          ║
 ║   Filtered warnings · Auto‑scroll to terminal (fixed)         ║
 ║   Auto-delete files after download · Custom audio player      ║
