@@ -4,7 +4,7 @@ Before I procced, make sure you have **`GIT`** installed on your system. Thank Y
 
 **1:**
 ```shell
-git clone github.com/alexander-datskov/ytmp3-premium && cd ytmp3-premium
+git clone https://github.com/alexander-datskov/ytmp3-premium && cd ytmp3-premium
 ```
 **2:**
 ```shell
@@ -13,6 +13,10 @@ python3 -m venv .venv
 **3:**
 ```shell
 source .venv/bin/activate
+```
+**Or if on windows"**
+```shell
+venv\Scripts\activate.bat
 ```
 **4:**
 ```shell
