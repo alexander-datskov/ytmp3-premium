@@ -3,6 +3,7 @@
 YTMP3-DL Web Terminal Server – OLED Black Edition
 Auto-deletes files after download. Secure streaming + download endpoints.
 Suppresses backend warnings.
+Now with automatic Cloudflare Tunnel and a nicer play/pause button.
 """
 
 import warnings
@@ -10,7 +11,7 @@ warnings.filterwarnings("ignore", message=".*RequestsDependencyWarning.*")
 warnings.filterwarnings("ignore", message=".*urllib3.*")
 warnings.filterwarnings("ignore", message=".*chardet.*")
 
-from flask import Flask, render_template_string, request, jsonify, send_file, abort, make_response
+from flask import Flask, render_template_string, request, jsonify, send_file, abort
 from flask_socketio import SocketIO, emit
 import subprocess
 import threading
@@ -18,19 +19,24 @@ import os
 import time
 import re
 import traceback
+import atexit
+import signal
+import sys
 
 app = Flask(__name__)
 app.config['SECRET_KEY'] = 'ytmp3-dl-secret-key-2024'
 socketio = SocketIO(app, cors_allowed_origins="*")
 
 # Output directory (where mp3.py saves files)
-OUTPUT_DIR = '~/ytmp3-premium/music-output'
-OUTPUT_DIR = os.path.expanduser(OUTPUT_DIR)
+OUTPUT_DIR = '/home/rasp-alex2/ytmp3-mp4/music-output'
 
 # Active processes
 active_processes = {}
 
+# ----------------------------------------------------------------------
 # HTML Template – OLED Black, refined UI, custom download button
+# (play/pause button now uses SVG icons, no emoji offset)
+# ----------------------------------------------------------------------
 HTML_TEMPLATE = r"""
 <!DOCTYPE html>
 <html lang="en">
@@ -415,15 +421,19 @@ HTML_TEMPLATE = r"""
             background: var(--btn-bg);
             border: 2px solid var(--accent);
             color: var(--accent);
-            font-size: 2rem;
             display: flex;
             align-items: center;
             justify-content: center;
             cursor: pointer;
             transition: all 0.2s;
             box-shadow: 0 0 15px var(--accent-dim);
-            line-height: 1;
-            padding-bottom: 2px;
+        }
+
+        .play-pause-btn svg {
+            width: 30px;
+            height: 30px;
+            stroke: currentColor;
+            fill: none;
         }
 
         .play-pause-btn:hover {
@@ -703,7 +713,17 @@ HTML_TEMPLATE = r"""
             <!-- Custom Player Controls -->
             <div class="custom-player">
                 <div class="player-controls">
-                    <div class="play-pause-btn" id="playPauseBtn">▶</div>
+                    <div class="play-pause-btn" id="playPauseBtn">
+                        <!-- Play icon (triangle) -->
+                        <svg class="play-icon" viewBox="0 0 24 24" width="30" height="30" stroke="currentColor" stroke-width="1.5" fill="none">
+                            <polygon points="5 3 19 12 5 21 5 3" />
+                        </svg>
+                        <!-- Pause icon (two bars) initially hidden -->
+                        <svg class="pause-icon" viewBox="0 0 24 24" width="30" height="30" stroke="currentColor" stroke-width="1.5" fill="none" style="display: none;">
+                            <line x1="6" y1="4" x2="6" y2="20" />
+                            <line x1="18" y1="4" x2="18" y2="20" />
+                        </svg>
+                    </div>
                     <div class="time-display" id="timeDisplay">00:00 / 00:00</div>
                     <div class="progress-container">
                         <div class="progress-bar" id="progressBar">
@@ -741,6 +761,8 @@ HTML_TEMPLATE = r"""
         // Audio player elements
         const audio = document.getElementById('audioElement');
         const playPauseBtn = document.getElementById('playPauseBtn');
+        const playIcon = document.querySelector('.play-icon');
+        const pauseIcon = document.querySelector('.pause-icon');
         const timeDisplay = document.getElementById('timeDisplay');
         const progressBar = document.getElementById('progressBar');
         const progressFill = document.getElementById('progressFill');
@@ -753,18 +775,21 @@ HTML_TEMPLATE = r"""
         let isMuted = false;
         let volume = 1.0;
 
-        // Update play button based on playback state
+        // Update play/pause icons based on playback state
         audio.addEventListener('play', () => {
             isPlaying = true;
-            playPauseBtn.textContent = '⏸';
+            playIcon.style.display = 'none';
+            pauseIcon.style.display = 'block';
         });
         audio.addEventListener('pause', () => {
             isPlaying = false;
-            playPauseBtn.textContent = '▶';
+            playIcon.style.display = 'block';
+            pauseIcon.style.display = 'none';
         });
         audio.addEventListener('ended', () => {
             isPlaying = false;
-            playPauseBtn.textContent = '▶';
+            playIcon.style.display = 'block';
+            pauseIcon.style.display = 'none';
             progressFill.style.width = '0%';
             timeDisplay.textContent = formatTime(0) + ' / ' + formatTime(audio.duration);
         });
@@ -932,7 +957,8 @@ HTML_TEMPLATE = r"""
             document.getElementById('urlInput').value = '';
             document.getElementById('convertBtn').disabled = false;
             // Reset player UI
-            playPauseBtn.textContent = '▶';
+            playIcon.style.display = 'block';
+            pauseIcon.style.display = 'none';
             progressFill.style.width = '0%';
             timeDisplay.textContent = '00:00 / 00:00';
         });
@@ -1318,25 +1344,96 @@ def delete_file_http(filename):
         print(f"[!] Delete error: {e}")
         return {'status': 'error', 'message': f'Failed to delete: {str(e)}'}, 500
 
+
+# ----------------------------------------------------------------------
+# Cloudflare Tunnel integration
+# ----------------------------------------------------------------------
+def start_cloudflare_tunnel():
+    """Launch cloudflared tunnel, show logs until URL, then go completely silent (but keep running)."""
+    try:
+        process = subprocess.Popen(
+            ['cloudflared', 'tunnel', '--url', 'http://localhost:1234'],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            bufsize=1,
+            universal_newlines=True
+        )
+    except FileNotFoundError:
+        print("\n[!] cloudflared not found. Install from https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/")
+        print("    The app will still run locally on http://localhost:1234\n")
+        return None
+
+    tunnel_url = None
+    url_found = threading.Event()
+
+    def read_output():
+        nonlocal tunnel_url
+        for line in iter(process.stdout.readline, ''):
+            if not tunnel_url:
+                match = re.search(r'https://[a-zA-Z0-9.-]+\.trycloudflare\.com', line)
+                if match:
+                    tunnel_url = match.group(0)
+                    url_found.set()
+                    # Print the banner once
+                    print("\n" + "="*60)
+                    print("\n🌐  CLOUDFLARE TUNNEL ACTIVE: {}".format(tunnel_url))
+                    print("\n" + "="*60 + "\n")
+                    # From now on, silently consume all future output
+                    # (don't print anything else)
+                    continue
+            # After URL found, we still read but discard silently.
+            # (No print here)
+        # If the loop ends (process died), check if we ever got the URL
+        if not url_found.is_set():
+            print("\n[!] Cloudflare tunnel process ended without providing a URL.")
+            print("    Check your network or run without hiding logs to debug.\n")
+        elif url_found.is_set():
+            # Tunnel died after we had a URL – warn the user
+            print("\n[!] Cloudflare tunnel stopped unexpectedly.")
+            print("    The public URL may no longer be accessible.\n")
+
+    thread = threading.Thread(target=read_output, daemon=True)
+    thread.start()
+    return process
+
 if __name__ == '__main__':
     print("""
-╔═══════════════════════════════════════════════════════════════╗
-║                                                               ║
-║   YTMP3-DL WEB TERMINAL · OLED EDITION (FINAL)                ║
-║   Running on: http://localhost:1234                           ║
-║   Output directory: ~/ytmp3-premium/music-output              ║
-║   Terminal font: 0.8rem · Auto‑hide after completion          ║
-║   Filtered warnings · Auto‑scroll to terminal (fixed)         ║
-║   Auto-delete files after download · Custom audio player      ║
-║   Secure dual‑endpoint (stream + download) with range support ║
+╔═════════════════════════════════════════════════════════════════════╗
+║                                                                     ║
+║   YTMP3-DL WEB TERMINAL · OLED EDITION (FINAL)                      ║
+║   Running on: http://localhost:1234                                 ║
+║   Output directory: /home/rasp-alex2/ytmp3-mp4/music-output         ║
+║   Terminal font: 0.8rem · Auto‑hide after completion                ║
+║   Filtered warnings · Auto‑scroll to terminal (fixed)               ║
+║   Auto-delete files after download · Custom audio player            ║
+║   Secure dual‑endpoint (stream + download) with range support       ║
 ║   Stylish download button (no "Open") · Backend warnings suppressed ║
-║                                                               ║
-╚═══════════════════════════════════════════════════════════════╝
+║   Now with Cloudflare Tunnel & improved play/pause button           ║
+║                                                                     ║
+╚═════════════════════════════════════════════════════════════════════╝
     """)
     
     # Ensure output directory exists (optional)
     if not os.path.exists(OUTPUT_DIR):
         print(f"[!] Warning: Output directory {OUTPUT_DIR} does not exist. Please create it.")
     
-    socketio.run(app, host='0.0.0.0', port=1234, debug=False)
+    # Start Cloudflare tunnel (if cloudflared is installed)
+    tunnel_process = start_cloudflare_tunnel()
 
+    # Ensure tunnel is killed when the script exits
+    def cleanup():
+        if tunnel_process and tunnel_process.poll() is None:
+            print("\n[+] Terminating Cloudflare tunnel...")
+            tunnel_process.terminate()
+            try:
+                tunnel_process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                tunnel_process.kill()
+    atexit.register(cleanup)
+    signal.signal(signal.SIGINT, lambda sig, frame: sys.exit(0))
+
+    try:
+        socketio.run(app, host='0.0.0.0', port=1234, debug=False)
+    except KeyboardInterrupt:
+        pass  # cleanup will run via at exit
