@@ -16,7 +16,7 @@ source .venv/bin/activate
 ```
 **4:**
 ```shell
-pip install bcrypt bidict blinker certifi cffi charset-normalizer click cryptography ffmpeg Flask Flask-SocketIO h11 idna invoke itsdangerous Jinja2 MarkupSafe paramiko pycparser PyNaCl python-engineio python-socketio requests simple-websocket urllib3 Werkzeug wsproto yt-dlp
+sudo bash setup.sh
 ```
 ### Final Command. This Command Starts The Server
 **5:** 
