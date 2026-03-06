@@ -2,6 +2,8 @@
 
 Before I procced, make sure you have **`GIT`** installed on your system and run **`cd ~`** before running any of the following commands. Thank You!
 
+---
+
 **1:**
 ```shell
 git clone https://github.com/alexander-datskov/ytmp3-premium && cd ytmp3-premium
