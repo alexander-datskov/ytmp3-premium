@@ -1,6 +1,6 @@
 # **Run This Code In Order**
 
-Before I procced, make sure you have **`GIT`** installed on your system. Thank You!
+Before I procced, make sure you have **`GIT`** installed on your system and run **`cd ~`** before running any of the following commands. Thank You!
 
 **1:**
 ```shell
