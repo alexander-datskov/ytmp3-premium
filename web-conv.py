@@ -28,7 +28,7 @@ app.config['SECRET_KEY'] = 'ytmp3-dl-secret-key-2026'
 socketio = SocketIO(app, cors_allowed_origins="*")
 
 # Output directory (where mp3.py saves files)
-default_path = '~/ytmp3-premium/music-output'
+default_path = os.getenv('OUTPUT_DIR', '~/ytmp3-premium/music-output')
 OUTPUT_DIR = os.path.expanduser(default_path)
 
 # Active processes
@@ -1439,8 +1439,9 @@ if __name__ == '__main__':
     if not os.path.exists(OUTPUT_DIR):
         print(f"[!] Warning: Output directory {OUTPUT_DIR} does not exist. Please create it.")
     
-    # Start Cloudflare tunnel (if cloudflared is installed)
-    tunnel_process = start_cloudflare_tunnel()
+    # Start Cloudflare tunnel (if enabled and cloudflared is installed)
+    enable_tunnel = os.getenv('ENABLE_CLOUDFLARE_TUNNEL', 'false').lower() in {'1', 'true', 'yes'}
+    tunnel_process = start_cloudflare_tunnel() if enable_tunnel else None
 
     # Ensure tunnel is killed when the script exits
     def cleanup():
