@@ -22,7 +22,7 @@ venv\Scripts\activate.bat
 ```
 **4:**
 ```shell
-sudo bash setup.sh
+bash setup.sh
 ```
 ### Final Command. This Command Starts The Server
 **5:** 
