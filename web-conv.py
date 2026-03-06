@@ -28,7 +28,8 @@ app.config['SECRET_KEY'] = 'ytmp3-dl-secret-key-2024'
 socketio = SocketIO(app, cors_allowed_origins="*")
 
 # Output directory (where mp3.py saves files)
-OUTPUT_DIR = '/home/rasp-alex2/ytmp3-mp4/music-output'
+default_path = '~/ytmp3-premium/music-output'
+OUTPUT_DIR = os.path.expanduser(default_path)
 
 # Active processes
 active_processes = {}
@@ -1457,3 +1458,4 @@ if __name__ == '__main__':
         socketio.run(app, host='0.0.0.0', port=1234, debug=False)
     except KeyboardInterrupt:
         pass  # cleanup will run via at exit
+
