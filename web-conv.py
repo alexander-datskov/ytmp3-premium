@@ -28,8 +28,8 @@ app.config['SECRET_KEY'] = 'ytmp3-dl-secret-key-2024'
 socketio = SocketIO(app, cors_allowed_origins="*")
 
 # Output directory (where mp3.py saves files)
-default_path = '~/ytmp3-premium/music-output'
-OUTPUT_DIR = os.path.expanduser(default_path)
+OUTPUT_DIR = '/home/rasp-alex2/ytmp3-mp4/music-output'
+
 # Active processes
 active_processes = {}
 
@@ -757,7 +757,7 @@ HTML_TEMPLATE = r"""
         </div>
     </div>
 
-    <script>
+        <script>
         const socket = io();
         let sessionId = null;
         let inputLocked = false;
@@ -974,6 +974,13 @@ HTML_TEMPLATE = r"""
             document.getElementById('terminalInput').classList.remove('active');
             document.getElementById('terminalCard').classList.remove('active'); // Hide terminal on error too
             inputLocked = false;
+        });
+
+        // Delete file on page unload (refresh/close) if not already downloaded
+        window.addEventListener('beforeunload', function() {
+            if (currentFilename) {
+                navigator.sendBeacon(`/api/delete-file/${currentFilename}`);
+            }
         });
 
         function startConversion() {
@@ -1450,4 +1457,3 @@ if __name__ == '__main__':
         socketio.run(app, host='0.0.0.0', port=1234, debug=False)
     except KeyboardInterrupt:
         pass  # cleanup will run via at exit
-
