@@ -24,7 +24,7 @@ import signal
 import sys
 
 app = Flask(__name__)
-app.config['SECRET_KEY'] = 'ytmp3-dl-secret-key-2024'
+app.config['SECRET_KEY'] = 'ytmp3-dl-secret-key-2026'
 socketio = SocketIO(app, cors_allowed_origins="*")
 
 # Output directory (where mp3.py saves files)
@@ -1424,7 +1424,7 @@ if __name__ == '__main__':
 ║                                                                     ║
 ║   YTMP3-DL WEB TERMINAL · OLED EDITION (FINAL)                      ║
 ║   Running on: http://localhost:1234                                 ║
-║   Output directory: /home/rasp-alex2/ytmp3-mp4/music-output         ║
+║   Output directory: ~/ytmp3-mp4/music-output                        ║
 ║   Terminal font: 0.8rem · Auto‑hide after completion                ║
 ║   Filtered warnings · Auto‑scroll to terminal (fixed)               ║
 ║   Auto-delete files after download · Custom audio player            ║
@@ -1458,4 +1458,3 @@ if __name__ == '__main__':
         socketio.run(app, host='0.0.0.0', port=1234, debug=False)
     except KeyboardInterrupt:
         pass  # cleanup will run via at exit
-
