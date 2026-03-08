@@ -44,8 +44,11 @@ trap 'kill "$SUDO_KEEPER_PID" 2>/dev/null' EXIT
 section "1 / 5  System Package Update"
 # ─────────────────────────────────────────────────────────────
 info "Updating apt package list..."
-sudo apt update -y
-success "Package list updated."
+if sudo apt update -y; then
+    success "Package list updated."
+else
+    warn "apt update failed. Skipping and continuing with existing package list."
+fi
 
 # ─────────────────────────────────────────────────────────────
 section "2 / 5  ffmpeg"
