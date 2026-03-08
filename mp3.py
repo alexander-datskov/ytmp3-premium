@@ -3,6 +3,7 @@
 import concurrent.futures
 import os
 import platform
+import random
 import shutil
 import sys
 import time
@@ -101,11 +102,247 @@ AUDIO_FORMATS = {
 }
 
 
+# ---------------------------------------------------------------------------
+# FINGERPRINT POOLS
+# Realistic browser/device fingerprints — rotated per strategy to look human.
+# Each UA is paired with matching headers so the whole profile is consistent.
+# ---------------------------------------------------------------------------
+
+# Real Chrome on Windows 11 fingerprints (most common browser/OS combo on YT)
+CHROME_WIN_PROFILES = [
+    {
+        'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+        'sec_ch_ua': '"Chromium";v="122", "Not(A:Brand";v="24", "Google Chrome";v="122"',
+        'platform': 'Windows',
+    },
+    {
+        'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
+        'sec_ch_ua': '"Not A(Brand";v="99", "Google Chrome";v="121", "Chromium";v="121"',
+        'platform': 'Windows',
+    },
+    {
+        'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'sec_ch_ua': '"Not_A Brand";v="8", "Chromium";v="120", "Google Chrome";v="120"',
+        'platform': 'Windows',
+    },
+]
+
+# Real Chrome on macOS fingerprints
+CHROME_MAC_PROFILES = [
+    {
+        'user_agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+        'sec_ch_ua': '"Chromium";v="122", "Not(A:Brand";v="24", "Google Chrome";v="122"',
+        'platform': 'macOS',
+    },
+    {
+        'user_agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 14_3_1) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
+        'sec_ch_ua': '"Not A(Brand";v="99", "Google Chrome";v="121", "Chromium";v="121"',
+        'platform': 'macOS',
+    },
+]
+
+# Real Firefox on Windows fingerprints
+FIREFOX_WIN_PROFILES = [
+    {
+        'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:123.0) Gecko/20100101 Firefox/123.0',
+        'sec_ch_ua': None,  # Firefox doesn't send sec-ch-ua
+        'platform': 'Windows',
+    },
+    {
+        'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:122.0) Gecko/20100101 Firefox/122.0',
+        'sec_ch_ua': None,
+        'platform': 'Windows',
+    },
+]
+
+# Real Safari on macOS fingerprints
+SAFARI_MAC_PROFILES = [
+    {
+        'user_agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 14_3_1) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.3.1 Safari/605.1.15',
+        'sec_ch_ua': None,  # Safari doesn't send sec-ch-ua
+        'platform': 'macOS',
+    },
+]
+
+# Android Chrome (mobile) — treated like a real phone by YouTube
+ANDROID_CHROME_PROFILES = [
+    {
+        'user_agent': 'Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.6261.105 Mobile Safari/537.36',
+        'sec_ch_ua': '"Chromium";v="122", "Not(A:Brand";v="24", "Google Chrome";v="122"',
+        'platform': 'Android',
+    },
+    {
+        'user_agent': 'Mozilla/5.0 (Linux; Android 13; SM-S918B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.6167.178 Mobile Safari/537.36',
+        'sec_ch_ua': '"Not A(Brand";v="99", "Google Chrome";v="121", "Chromium";v="121"',
+        'platform': 'Android',
+    },
+    {
+        'user_agent': 'Mozilla/5.0 (Linux; Android 14; SM-G991B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.6261.119 Mobile Safari/537.36',
+        'sec_ch_ua': '"Chromium";v="122", "Not(A:Brand";v="24", "Google Chrome";v="122"',
+        'platform': 'Android',
+    },
+]
+
+# iOS Safari — iPhones are almost never flagged
+IOS_SAFARI_PROFILES = [
+    {
+        'user_agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_3_1 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.3.1 Mobile/15E148 Safari/604.1',
+        'sec_ch_ua': None,
+        'platform': 'iOS',
+    },
+    {
+        'user_agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_7_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1',
+        'sec_ch_ua': None,
+        'platform': 'iOS',
+    },
+]
+
+
+def build_http_headers(profile: dict) -> dict:
+    """
+    Build a full, realistic HTTP header set from a device profile.
+    These match what a real browser sends — missing or inconsistent
+    headers are one of the biggest bot signals YouTube checks for.
+    """
+    is_mobile = profile['platform'] in ('Android', 'iOS')
+    is_firefox = 'Firefox' in profile['user_agent']
+    is_safari  = 'Safari' in profile['user_agent'] and 'Chrome' not in profile['user_agent']
+
+    headers = {
+        'User-Agent': profile['user_agent'],
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
+        'Accept-Language': random.choice([
+            'en-US,en;q=0.9',
+            'en-US,en;q=0.9,es;q=0.8',
+            'en-GB,en;q=0.9',
+            'en-US,en;q=0.8',
+        ]),
+        'Accept-Encoding': 'gzip, deflate, br',
+        'Connection': 'keep-alive',
+        'Upgrade-Insecure-Requests': '1',
+        'Sec-Fetch-Dest': 'document',
+        'Sec-Fetch-Mode': 'navigate',
+        'Sec-Fetch-Site': random.choice(['none', 'same-origin']),
+        'Sec-Fetch-User': '?1',
+        'Cache-Control': random.choice(['max-age=0', 'no-cache']),
+        'DNT': random.choice(['1', None, None]),  # most people don't set DNT
+    }
+
+    # Remove None values
+    headers = {k: v for k, v in headers.items() if v is not None}
+
+    # Chrome-specific client hints — Firefox/Safari don't send these
+    if profile.get('sec_ch_ua'):
+        mobile_val = '?1' if is_mobile else '?0'
+        headers['Sec-Ch-Ua']          = profile['sec_ch_ua']
+        headers['Sec-Ch-Ua-Mobile']   = mobile_val
+        headers['Sec-Ch-Ua-Platform'] = f'"{profile["platform"]}"'
+
+    # Firefox sends slightly different accept header
+    if is_firefox:
+        headers['Accept'] = 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8'
+        headers['Accept-Language'] = random.choice(['en-US,en;q=0.5', 'en-GB,en;q=0.5'])
+
+    return headers
+
+
+# ---------------------------------------------------------------------------
+# FALLBACK STRATEGY CHAIN
+# Ordered from least invasive to most aggressive.
+# Each strategy is a complete, consistent device identity.
+# ---------------------------------------------------------------------------
+
+def build_strategies() -> list:
+    """Build the strategy chain. Called fresh each run so profiles are randomized."""
+    return [
+        # 1. Bare default — works 99% of the time on residential IPs
+        {
+            'name': 'Default',
+            'overrides': {}
+        },
+
+        # 2. Randomized real Chrome/Windows fingerprint
+        {
+            'name': 'Chrome/Windows fingerprint',
+            'overrides': {
+                **({'http_headers': build_http_headers(random.choice(CHROME_WIN_PROFILES))}),
+            }
+        },
+
+        # 3. Android Chrome — real phone UA + matching headers
+        {
+            'name': 'Android Chrome fingerprint',
+            'overrides': {
+                'http_headers': build_http_headers(random.choice(ANDROID_CHROME_PROFILES)),
+                'extractor_args': {'youtube': {'player_client': ['android']}},
+            }
+        },
+
+        # 4. iOS Safari — Apple devices almost never get bot-checked
+        {
+            'name': 'iOS Safari fingerprint',
+            'overrides': {
+                'http_headers': build_http_headers(random.choice(IOS_SAFARI_PROFILES)),
+                'extractor_args': {'youtube': {'player_client': ['ios']}},
+            }
+        },
+
+        # 5. Chrome on macOS
+        {
+            'name': 'Chrome/macOS fingerprint',
+            'overrides': {
+                'http_headers': build_http_headers(random.choice(CHROME_MAC_PROFILES)),
+            }
+        },
+
+        # 6. Firefox on Windows — different header profile entirely
+        {
+            'name': 'Firefox/Windows fingerprint',
+            'overrides': {
+                'http_headers': build_http_headers(random.choice(FIREFOX_WIN_PROFILES)),
+            }
+        },
+
+        # 7. TV Embedded client — YouTube barely checks smart TV traffic
+        {
+            'name': 'TV Embedded client',
+            'overrides': {
+                'extractor_args': {'youtube': {'player_client': ['tv_embedded']}},
+            }
+        },
+
+        # 8. Safari on macOS
+        {
+            'name': 'Safari/macOS fingerprint',
+            'overrides': {
+                'http_headers': build_http_headers(random.choice(SAFARI_MAC_PROFILES)),
+            }
+        },
+
+        # 9. Android + randomized Windows headers as extra noise
+        {
+            'name': 'Android client + Chrome headers',
+            'overrides': {
+                'http_headers': build_http_headers(random.choice(CHROME_WIN_PROFILES)),
+                'extractor_args': {'youtube': {'player_client': ['android']}},
+            }
+        },
+
+        # 10. Multi-client chain — last resort, tries android→ios→tv in sequence
+        {
+            'name': 'Multi-client chain + Android headers',
+            'overrides': {
+                'http_headers': build_http_headers(random.choice(ANDROID_CHROME_PROFILES)),
+                'extractor_args': {'youtube': {'player_client': ['android', 'ios', 'tv_embedded']}},
+            }
+        },
+    ]
+
+
 def hacker_banner():
     """Display sick hacker-style banner"""
     clear()
     
-    # Build the banner without inline colors first (proper spacing)
     banner_lines = [
         "╔═══════════════════════════════════════════════════════════════════════╗",
         "║                                                                       ║",
@@ -121,7 +358,6 @@ def hacker_banner():
         "╚═══════════════════════════════════════════════════════════════════════╝"
     ]
     
-    # Apply colors to specific lines
     colors_map = {
         0: color.ERROR,
         1: color.ERROR,
@@ -137,7 +373,6 @@ def hacker_banner():
         11: color.ERROR
     }
     
-    # Print each line with its color
     for i, line in enumerate(banner_lines):
         print(f"{colors_map.get(i, color.ERROR)}{line}{color.ENDC}")
 
@@ -194,16 +429,17 @@ def get_quality_choice():
 
 def get_download_path():
     """Set default download directory"""
-    default_path = '~/ytmp3-premium/music-output'
+    default_path = '~/ytmp3-mp4/music-output'
     expanded_path = os.path.expanduser(default_path)
     os.makedirs(expanded_path, exist_ok=True)
     return expanded_path
 
+
 def get_ffmpeg_path(path=''):
     """Set ffmpeg binary location"""
-    if path!='':
-        if os.path.exists(path) and (path.split('/')[-1] in ['ffmpeg', 'ffmpeg.exe']) : return path
-        else : print(f"{color.BOLD}{color.ERROR}[X] ffmpeg NOT FOUND at `{path}`{color.ENDC}"); exit(0)
+    if path != '':
+        if os.path.exists(path) and (path.split('/')[-1] in ['ffmpeg', 'ffmpeg.exe']): return path
+        else: print(f"{color.BOLD}{color.ERROR}[X] ffmpeg NOT FOUND at `{path}`{color.ENDC}"); exit(0)
 
     elif shutil.which('ffmpeg') != None:
         return shutil.which('ffmpeg')
@@ -264,19 +500,52 @@ def print_status():
     print()
 
 
+def build_options(overrides: dict) -> dict:
+    """Merge base yt_dlp_options with a fallback strategy's overrides"""
+    opts = dict(yt_dlp_options)
+    opts.update(overrides)
+    return opts
+
+
 def download(url):
-    """Download audio from YouTube URL"""
-    with yt_dlp.YoutubeDL(yt_dlp_options) as downloader:
-        info = downloader.extract_info(url, download=False)
-        title = info.get('title', None)
+    """
+    Download audio from YouTube URL.
+    Cycles through the full fingerprint strategy chain on any failure.
+    Each strategy presents a different, fully consistent device identity.
+    """
+    fallback_strategies = build_strategies()  # fresh randomized profiles per download
+    last_error = None
 
-        status[URLS.index(url)] = f"{color.WARNING}[⚡ EXTRACTING]{color.ENDC}  {title}"
-        print_status()
+    for i, strategy in enumerate(fallback_strategies):
+        opts = build_options(strategy['overrides'])
+        strategy_label = f"[{i+1}/{len(fallback_strategies)}] {strategy['name']}"
 
-        downloader.download([url])
+        try:
+            with yt_dlp.YoutubeDL(opts) as downloader:
+                info = downloader.extract_info(url, download=False)
+                title = info.get('title', 'Unknown')
 
-        status[URLS.index(url)] = f"{color.OKGREEN}[✓ COMPLETE]{color.ENDC}    {title}"
-        print_status()
+                status[URLS.index(url)] = f"{color.WARNING}[⚡ EXTRACTING]{color.ENDC}  {title}  {color.BLUE}({strategy['name']}){color.ENDC}"
+                print_status()
+
+                downloader.download([url])
+
+                status[URLS.index(url)] = f"{color.OKGREEN}[✓ COMPLETE]{color.ENDC}    {title}"
+                print_status()
+                return  # success — stop trying
+
+        except Exception as e:
+            last_error = e
+            status[URLS.index(url)] = f"{color.ERROR}[✗ FAILED]{color.ENDC}      {url}  {color.WARNING}→ trying: {strategy_label}{color.ENDC}"
+            print_status()
+            # Small human-like delay between attempts — rapid retries look robotic
+            time.sleep(random.uniform(1.5, 3.5))
+
+    # All strategies exhausted
+    status[URLS.index(url)] = f"{color.ERROR}[✗✗ GAVE UP]{color.ENDC}    {url}  {color.ERROR}(all {len(fallback_strategies)} strategies failed){color.ENDC}"
+    print_status()
+    print(f"{color.BOLD}{color.ERROR}[FATAL]{color.ENDC} Could not download: {url}")
+    print(f"        Last error: {last_error}")
 
 
 # Driver code
@@ -294,8 +563,8 @@ except GetoptError as e:
 if len(cli_options)==0 and len(URLS)==0:
     usage()
 
-# Set default values - MAXIMUM SPEED
-limit = 4  # Increased default for speed
+# Set default values
+limit = 4
 ffmpeg_path = get_ffmpeg_path()
 download_path = get_download_path()
 
@@ -323,7 +592,7 @@ if quality_choice is None:
 
 selected_format = AUDIO_FORMATS[quality_choice]
 
-# Configure yt-dlp options for MAXIMUM SPEED and QUALITY
+# Base yt-dlp options — clean, no fingerprint overrides (strategies handle those)
 yt_dlp_options = {
     'quiet': True,
     'no_warnings': True,
@@ -334,32 +603,19 @@ yt_dlp_options = {
     'noplaylist': True,
     'noprogress': True,
     'prefer_ffmpeg': True,
-    'extract_audio': True,
-    'concurrent_fragment_downloads': 16,  # Maximum speed
+    'concurrent_fragment_downloads': 16,
     'retries': 10,
     'fragment_retries': 10,
-    'http_chunk_size': 10485760,  # 10MB chunks for speed
+    'http_chunk_size': 10485760,
+    'postprocessors': [{
+        'key': 'FFmpegExtractAudio',
+        'preferredcodec': selected_format['ext'],
+        'preferredquality': selected_format['quality'] if selected_format['quality'] != 'best' else '0',
+    }],
 }
 
-# Add postprocessors based on format
-if selected_format['ext'] in ['mp3', 'flac', 'wav']:
-    yt_dlp_options['postprocessors'] = [{
-        'key': 'FFmpegExtractAudio',
-        'preferredcodec': selected_format['ext'],
-        'preferredquality': selected_format['quality']
-    }]
-elif selected_format['ext'] in ['opus', 'ogg', 'm4a']:
-    yt_dlp_options['postprocessors'] = [{
-        'key': 'FFmpegExtractAudio',
-        'preferredcodec': selected_format['ext'],
-    }]
-
-# Maximum quality settings
-yt_dlp_options['audioquality'] = 0  # 0 = best quality
-yt_dlp_options['audio_format'] = selected_format['ext']
-
 # Initialize status
-for url in URLS : status.append(f"{color.OKCYAN}[⏳ QUEUED]{color.ENDC}     {url}")
+for url in URLS: status.append(f"{color.OKCYAN}[⏳ QUEUED]{color.ENDC}     {url}")
 
 # Start downloads
 clear()
@@ -367,7 +623,8 @@ hacker_banner()
 print(f"\n{color.BOLD}{color.OKGREEN}[✓]{color.ENDC} {color.BOLD}INITIATING EXTRACTION PROTOCOL...{color.ENDC}")
 print(f"{color.BOLD}{color.OKCYAN}[>]{color.ENDC} {color.BOLD}Quality:{color.ENDC} {selected_format['name']} {selected_format['tier']}")
 print(f"{color.BOLD}{color.OKCYAN}[>]{color.ENDC} {color.BOLD}Threads:{color.ENDC} {limit} parallel operations")
-print(f"{color.BOLD}{color.OKCYAN}[>]{color.ENDC} {color.BOLD}Targets:{color.ENDC} {len(URLS)} URLs\n")
+print(f"{color.BOLD}{color.OKCYAN}[>]{color.ENDC} {color.BOLD}Targets:{color.ENDC} {len(URLS)} URLs")
+print(f"{color.BOLD}{color.OKCYAN}[>]{color.ENDC} {color.BOLD}Fallbacks:{color.ENDC} 10 device fingerprint strategies loaded\n")
 time.sleep(0.5)
 
 with concurrent.futures.ThreadPoolExecutor(max_workers=limit) as executor:
@@ -376,4 +633,3 @@ with concurrent.futures.ThreadPoolExecutor(max_workers=limit) as executor:
 # Final status
 print(f"\n{color.BOLD}{color.OKGREEN}[✓✓✓]{color.ENDC} {color.BOLD}ALL OPERATIONS COMPLETE{color.ENDC}")
 print(f"{color.BOLD}{color.OKCYAN}[>]{color.ENDC} Files saved to: {download_path}\n")
-
