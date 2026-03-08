@@ -429,7 +429,7 @@ def get_quality_choice():
 
 def get_download_path():
     """Set default download directory"""
-    default_path = '~/ytmp3-mp4/music-output'
+    default_path = '~/ytmp3-premium/music-output'
     expanded_path = os.path.expanduser(default_path)
     os.makedirs(expanded_path, exist_ok=True)
     return expanded_path
@@ -633,3 +633,4 @@ with concurrent.futures.ThreadPoolExecutor(max_workers=limit) as executor:
 # Final status
 print(f"\n{color.BOLD}{color.OKGREEN}[✓✓✓]{color.ENDC} {color.BOLD}ALL OPERATIONS COMPLETE{color.ENDC}")
 print(f"{color.BOLD}{color.OKCYAN}[>]{color.ENDC} Files saved to: {download_path}\n")
+
