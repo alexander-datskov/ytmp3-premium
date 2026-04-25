@@ -41,7 +41,9 @@ AUDIO_FORMATS = {
         'quality': 'best',
         'description': '⚡ ABSOLUTE MAXIMUM - Raw studio quality, no compression, MASSIVE files',
         'format': 'bestaudio/best',
-        'tier': '💎 GODMODE'
+        'tier': '💎 GODMODE',
+        # Force 32-bit signed PCM — no intermediate lossy step, no bit depth downgrade
+        'pp_args': ['-acodec', 'pcm_s32le', '-sample_fmt', 's32'],
     },
     '2': {
         'name': 'FLAC (LOSSLESS)',
@@ -49,7 +51,9 @@ AUDIO_FORMATS = {
         'quality': 'best',
         'description': '⚡ AUDIOPHILE ELITE - Perfect lossless, compressed but zero quality loss',
         'format': 'bestaudio/best',
-        'tier': '💎 GODMODE'
+        'tier': '💎 GODMODE',
+        # 32-bit sample format + max compression level — lossless by spec, never lossy
+        'pp_args': ['-sample_fmt', 's32', '-compression_level', '8'],
     },
     '3': {
         'name': 'M4A (AAC HQ)',
@@ -65,7 +69,9 @@ AUDIO_FORMATS = {
         'quality': 'best',
         'description': '🔥 CUTTING EDGE - Superior codec, better than MP3 at same bitrate',
         'format': 'bestaudio[ext=webm][acodec=opus]/bestaudio/best',
-        'tier': '🏆 ELITE'
+        'tier': '🏆 ELITE',
+        # Stream-copy the native Opus track — zero re-encoding, what YouTube actually has
+        'pp_args': ['-vn', '-c:a', 'copy'],
     },
     '5': {
         'name': 'MP3 320kbps',
@@ -614,6 +620,15 @@ yt_dlp_options = {
     }],
 }
 
+# Wire in per-format ffmpeg args so lossless formats get proper encoding:
+#   WAV  → pcm_s32le (32-bit PCM, no bit-depth downgrade)
+#   FLAC → s32 sample fmt + compression_level 8 (lossless by spec, max compression)
+#   Opus → stream-copy the native track, no re-encode
+if selected_format.get('pp_args'):
+    yt_dlp_options['postprocessor_args'] = {
+        'FFmpegExtractAudio': selected_format['pp_args']
+    }
+
 # Initialize status
 for url in URLS: status.append(f"{color.OKCYAN}[⏳ QUEUED]{color.ENDC}     {url}")
 
@@ -633,4 +648,3 @@ with concurrent.futures.ThreadPoolExecutor(max_workers=limit) as executor:
 # Final status
 print(f"\n{color.BOLD}{color.OKGREEN}[✓✓✓]{color.ENDC} {color.BOLD}ALL OPERATIONS COMPLETE{color.ENDC}")
 print(f"{color.BOLD}{color.OKCYAN}[>]{color.ENDC} Files saved to: {download_path}\n")
-
