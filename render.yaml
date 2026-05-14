@@ -1,0 +1,6 @@
+services:
+  - type: web
+    name: ytmp3-premium
+    env: docker
+    plan: free
+    autoDeploy: true
